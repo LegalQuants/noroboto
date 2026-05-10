@@ -119,6 +119,13 @@ def index():
     return render_template("index.html")
 
 
+@app.get("/favicon.ico")
+def favicon():
+    # Browsers request /favicon.ico unconditionally; respond 204 so it doesn't
+    # show up as a 404 in DevTools.
+    return ("", 204)
+
+
 @app.get("/current-doc")
 def current_doc():
     return send_file(
