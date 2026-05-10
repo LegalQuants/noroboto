@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 DOCX_DOCUMENT_PART = "word/document.xml"
 WORDPROCESSINGML_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 XML_NAMESPACES = {"w": WORDPROCESSINGML_NS}
+WORD_TAG_PREFIX = f"{{{WORDPROCESSINGML_NS}}}"
 
 ET.register_namespace("w", WORDPROCESSINGML_NS)
 
@@ -26,17 +27,61 @@ def _iter_text_elements(root: ET.Element) -> Iterator[ET.Element]:
     yield from root.iterfind(".//w:t", XML_NAMESPACES)
 
 
-def replace_text(root: ET.Element, find: str, replace_with: str) -> int:
-    if not find:
-        raise ValueError("find must be a non-empty string")
+def _build_parent_map(root: ET.Element) -> dict[ET.Element, ET.Element]:
+    return {child: parent for parent in root.iter() for child in parent}
 
-    replacements = 0
-    for text_node in _iter_text_elements(root):
-        text_value = text_node.text or ""
-        if find in text_value:
-            text_node.text = text_value.replace(find, replace_with)
-            replacements += text_value.count(find)
-    return replacements
+
+def _require_target_text_element(root: ET.Element, text_xpath: str) -> tuple[ET.Element, ET.Element]:
+    target = root.find(text_xpath, XML_NAMESPACES)
+    if target is None:
+        raise ValueError(f"Text element not found for xpath: {text_xpath}")
+    if target.tag != f"{WORD_TAG_PREFIX}t":
+        raise ValueError(f"XPath must resolve to a w:t element: {text_xpath}")
+
+    parent_map = _build_parent_map(root)
+    try:
+        run = parent_map[target]
+    except KeyError as error:
+        raise ValueError("Target text element has no parent run") from error
+    if run.tag != f"{WORD_TAG_PREFIX}r":
+        raise ValueError("Target text element must be a direct child of w:r")
+    return run, target
+
+
+def _resolve_symbol_font(run: ET.Element) -> str:
+    r_fonts = run.find("w:rPr/w:rFonts", XML_NAMESPACES)
+    if r_fonts is None:
+        raise ValueError("Run does not define w:rFonts for symbol conversion")
+
+    font_attributes = (
+        f"{WORD_TAG_PREFIX}ascii",
+        f"{WORD_TAG_PREFIX}hAnsi",
+        f"{WORD_TAG_PREFIX}cs",
+        f"{WORD_TAG_PREFIX}eastAsia",
+    )
+    for attribute_name in font_attributes:
+        font_name = r_fonts.get(attribute_name)
+        if font_name:
+            return font_name
+    raise ValueError("Run w:rFonts is present but does not define a usable font")
+
+
+def replace_text_with_symbols(root: ET.Element, text_xpath: str) -> int:
+    run, target = _require_target_text_element(root, text_xpath)
+    text_value = target.text or ""
+    insert_at = list(run).index(target)
+    run.remove(target)
+
+    if not text_value:
+        return 0
+
+    symbol_font = _resolve_symbol_font(run)
+    for offset, character in enumerate(text_value):
+        symbol = ET.Element(f"{WORD_TAG_PREFIX}sym")
+        symbol.set(f"{WORD_TAG_PREFIX}font", symbol_font)
+        symbol.set(f"{WORD_TAG_PREFIX}char", f"{ord(character):04X}")
+        run.insert(insert_at + offset, symbol)
+    return len(text_value)
 
 
 @dataclass(slots=True)
@@ -60,9 +105,6 @@ class DocxPackage:
     def list_parts(self) -> list[str]:
         return sorted(self.parts)
 
-    def has_part(self, part_name: str) -> bool:
-        return _normalize_part_name(part_name) in self.parts
-
     def read_bytes(self, part_name: str) -> bytes:
         normalized_name = _normalize_part_name(part_name)
         try:
@@ -73,9 +115,6 @@ class DocxPackage:
     def write_bytes(self, part_name: str, payload: bytes) -> None:
         self.parts[_normalize_part_name(part_name)] = payload
 
-    def delete_part(self, part_name: str) -> None:
-        self.parts.pop(_normalize_part_name(part_name), None)
-
     def read_xml(self, part_name: str) -> ET.Element:
         return ET.fromstring(self.read_bytes(part_name))
 
@@ -85,17 +124,11 @@ class DocxPackage:
     def document_root(self) -> ET.Element:
         return self.read_xml(DOCX_DOCUMENT_PART)
 
-    def iter_document_text(self) -> Iterator[str]:
-        for text_node in _iter_text_elements(self.document_root()):
-            if text_node.text:
-                yield text_node.text
-
-    def replace_document_text(self, find: str, replace_with: str) -> int:
+    def replace_text_element_with_symbols(self, text_xpath: str) -> int:
         document_root = self.document_root()
-        replacements = replace_text(document_root, find, replace_with)
-        if replacements:
-            self.write_xml(DOCX_DOCUMENT_PART, document_root)
-        return replacements
+        replacement_count = replace_text_with_symbols(document_root, text_xpath)
+        self.write_xml(DOCX_DOCUMENT_PART, document_root)
+        return replacement_count
 
     def to_bytes(self) -> bytes:
         buffer = BytesIO()
@@ -106,3 +139,8 @@ class DocxPackage:
 
     def save(self, path: str | Path) -> None:
         Path(path).write_bytes(self.to_bytes())
+
+if __name__ == '__main__':
+    package = DocxPackage.from_file("nda.docx")
+    package.replace_text_element_with_symbols(".//w:r/w:t")
+    package.save("output.docx")
