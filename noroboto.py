@@ -1,10 +1,8 @@
 from __future__ import annotations
-
-from dataclasses import dataclass, field
+import zipfile
+from copy import copy
 from io import BytesIO
 from pathlib import Path
-from typing import Iterator
-from zipfile import ZIP_DEFLATED, ZipFile
 import xml.etree.ElementTree as ET
 
 DOCX_DOCUMENT_PART = "word/document.xml"
@@ -13,18 +11,6 @@ XML_NAMESPACES = {"w": WORDPROCESSINGML_NS}
 WORD_TAG_PREFIX = f"{{{WORDPROCESSINGML_NS}}}"
 
 ET.register_namespace("w", WORDPROCESSINGML_NS)
-
-
-def _normalize_part_name(part_name: str) -> str:
-    return part_name.lstrip("/")
-
-
-def _serialize_xml(root: ET.Element) -> bytes:
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
-
-
-def _iter_text_elements(root: ET.Element) -> Iterator[ET.Element]:
-    yield from root.iterfind(".//w:t", XML_NAMESPACES)
 
 
 def _build_parent_map(root: ET.Element) -> dict[ET.Element, ET.Element]:
@@ -66,81 +52,50 @@ def _resolve_symbol_font(run: ET.Element) -> str:
     raise ValueError("Run w:rFonts is present but does not define a usable font")
 
 
-def replace_text_with_symbols(root: ET.Element, text_xpath: str) -> int:
+def replace_text_with_symbols(document_xml: bytes, text_xpath: str) -> tuple[bytes, int]:
+    root = ET.fromstring(document_xml)
     run, target = _require_target_text_element(root, text_xpath)
     text_value = target.text or ""
     insert_at = list(run).index(target)
     run.remove(target)
 
-    if not text_value:
-        return 0
+    if text_value:
+        symbol_font = _resolve_symbol_font(run)
+        for offset, character in enumerate(text_value):
+            symbol = ET.Element(f"{WORD_TAG_PREFIX}sym")
+            symbol.set(f"{WORD_TAG_PREFIX}font", symbol_font)
+            symbol.set(f"{WORD_TAG_PREFIX}char", f"{ord(character):04X}")
+            run.insert(insert_at + offset, symbol)
 
-    symbol_font = _resolve_symbol_font(run)
-    for offset, character in enumerate(text_value):
-        symbol = ET.Element(f"{WORD_TAG_PREFIX}sym")
-        symbol.set(f"{WORD_TAG_PREFIX}font", symbol_font)
-        symbol.set(f"{WORD_TAG_PREFIX}char", f"{ord(character):04X}")
-        run.insert(insert_at + offset, symbol)
-    return len(text_value)
+    updated_document_xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return updated_document_xml, len(text_value)
 
 
-@dataclass(slots=True)
-class DocxPackage:
-    parts: dict[str, bytes] = field(default_factory=dict)
+def replace_text_element_with_symbols(docx_bytes: bytes, text_xpath: str) -> tuple[bytes, int]:
+    input_buffer = BytesIO(docx_bytes)
+    output_buffer = BytesIO()
+    replacement_count = 0
+    document_part_found = False
 
-    @classmethod
-    def from_bytes(cls, payload: bytes) -> "DocxPackage":
-        with ZipFile(BytesIO(payload), mode="r") as archive:
-            parts = {
-                item.filename: archive.read(item.filename)
-                for item in archive.infolist()
-                if not item.is_dir()
-            }
-        return cls(parts=parts)
+    with zipfile.ZipFile(input_buffer, mode="r") as source_archive:
+        with zipfile.ZipFile(output_buffer, mode="w") as output_archive:
+            for info in source_archive.infolist():
+                payload = source_archive.read(info.filename)
+                if info.filename == DOCX_DOCUMENT_PART:
+                    payload, replacement_count = replace_text_with_symbols(payload, text_xpath)
+                    document_part_found = True
 
-    @classmethod
-    def from_file(cls, path: str | Path) -> "DocxPackage":
-        return cls.from_bytes(Path(path).read_bytes())
+                output_archive.writestr(copy(info), payload)
 
-    def list_parts(self) -> list[str]:
-        return sorted(self.parts)
+    if not document_part_found:
+        raise KeyError(f"DOCX part not found: {DOCX_DOCUMENT_PART}")
 
-    def read_bytes(self, part_name: str) -> bytes:
-        normalized_name = _normalize_part_name(part_name)
-        try:
-            return self.parts[normalized_name]
-        except KeyError as error:
-            raise KeyError(f"DOCX part not found: {normalized_name}") from error
-
-    def write_bytes(self, part_name: str, payload: bytes) -> None:
-        self.parts[_normalize_part_name(part_name)] = payload
-
-    def read_xml(self, part_name: str) -> ET.Element:
-        return ET.fromstring(self.read_bytes(part_name))
-
-    def write_xml(self, part_name: str, root: ET.Element) -> None:
-        self.write_bytes(part_name, _serialize_xml(root))
-
-    def document_root(self) -> ET.Element:
-        return self.read_xml(DOCX_DOCUMENT_PART)
-
-    def replace_text_element_with_symbols(self, text_xpath: str) -> int:
-        document_root = self.document_root()
-        replacement_count = replace_text_with_symbols(document_root, text_xpath)
-        self.write_xml(DOCX_DOCUMENT_PART, document_root)
-        return replacement_count
-
-    def to_bytes(self) -> bytes:
-        buffer = BytesIO()
-        with ZipFile(buffer, mode="w", compression=ZIP_DEFLATED) as archive:
-            for part_name in sorted(self.parts):
-                archive.writestr(part_name, self.parts[part_name])
-        return buffer.getvalue()
-
-    def save(self, path: str | Path) -> None:
-        Path(path).write_bytes(self.to_bytes())
+    return output_buffer.getvalue(), replacement_count
 
 if __name__ == '__main__':
-    package = DocxPackage.from_file("nda.docx")
-    package.replace_text_element_with_symbols(".//w:r/w:t")
-    package.save("output.docx")
+    text_xpath = "w:body/w:p/w:r/w:t"
+    updated_docx, replacement_count = replace_text_element_with_symbols(
+        Path("./nda.docx").read_bytes(),
+        text_xpath,
+    )
+    Path("./output.docx").write_bytes(updated_docx)
