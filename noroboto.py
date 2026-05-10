@@ -3,48 +3,66 @@ import zipfile
 from copy import copy
 from io import BytesIO
 from pathlib import Path
-import xml.etree.ElementTree as ET
+from lxml import etree
 
 DOCX_DOCUMENT_PART = "word/document.xml"
 WORDPROCESSINGML_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 XML_NAMESPACES = {"w": WORDPROCESSINGML_NS}
-WORD_TAG_PREFIX = f"{{{WORDPROCESSINGML_NS}}}"
-
-ET.register_namespace("w", WORDPROCESSINGML_NS)
+XML_PARSER = etree.XMLParser(remove_blank_text=False, resolve_entities=False)
 
 
-def _build_parent_map(root: ET.Element) -> dict[ET.Element, ET.Element]:
-    return {child: parent for parent in root.iter() for child in parent}
+
+def _w_namespaced(local_name: str) -> str:
+    return etree.QName(WORDPROCESSINGML_NS, local_name).text
 
 
-def _require_target_text_element(root: ET.Element, text_xpath: str) -> tuple[ET.Element, ET.Element]:
-    target = root.find(text_xpath, XML_NAMESPACES)
-    if target is None:
+def _xpath_namespaces(root: etree._Element) -> dict[str, str]:
+    namespaces = {
+        prefix: uri
+        for prefix, uri in root.nsmap.items()
+        if prefix is not None and uri is not None
+    }
+    namespaces.setdefault("w", WORDPROCESSINGML_NS)
+    return namespaces
+
+
+def _serialize_xml(root: etree._Element) -> bytes:
+    document_info = root.getroottree().docinfo
+    encoding = document_info.encoding or "UTF-8"
+    standalone = None if document_info.standalone is None else bool(document_info.standalone)
+    return etree.tostring(
+        root,
+        encoding=encoding,
+        pretty_print=False,
+        standalone=standalone,
+        xml_declaration=True,
+    )
+
+
+def _require_target_text_element(root: etree._Element, text_xpath: str) -> tuple[etree._Element, etree._Element]:
+    targets = root.xpath(text_xpath, namespaces=_xpath_namespaces(root))
+    if not targets:
         raise ValueError(f"Text element not found for xpath: {text_xpath}")
-    if target.tag != f"{WORD_TAG_PREFIX}t":
+    target = targets[0]
+    if not isinstance(target, etree._Element):
+        raise ValueError(f"XPath must resolve to an element: {text_xpath}")
+    if target.tag != _w_namespaced("t"):
         raise ValueError(f"XPath must resolve to a w:t element: {text_xpath}")
 
-    parent_map = _build_parent_map(root)
-    try:
-        run = parent_map[target]
-    except KeyError as error:
-        raise ValueError("Target text element has no parent run") from error
-    if run.tag != f"{WORD_TAG_PREFIX}r":
+    run = target.getparent()
+    if run is None:
+        raise ValueError("Target text element has no parent run")
+    if run.tag != _w_namespaced("r"):
         raise ValueError("Target text element must be a direct child of w:r")
     return run, target
 
 
-def _resolve_symbol_font(run: ET.Element) -> str:
+def _resolve_symbol_font(run: etree._Element) -> str:
     r_fonts = run.find("w:rPr/w:rFonts", XML_NAMESPACES)
     if r_fonts is None:
         raise ValueError("Run does not define w:rFonts for symbol conversion")
 
-    font_attributes = (
-        f"{WORD_TAG_PREFIX}ascii",
-        f"{WORD_TAG_PREFIX}hAnsi",
-        f"{WORD_TAG_PREFIX}cs",
-        f"{WORD_TAG_PREFIX}eastAsia",
-    )
+    font_attributes = tuple(_w_namespaced(attribute) for attribute in ("ascii", "hAnsi", "cs", "eastAsia"))
     for attribute_name in font_attributes:
         font_name = r_fonts.get(attribute_name)
         if font_name:
@@ -53,7 +71,7 @@ def _resolve_symbol_font(run: ET.Element) -> str:
 
 
 def replace_text_with_symbols(document_xml: bytes, text_xpath: str) -> tuple[bytes, int]:
-    root = ET.fromstring(document_xml)
+    root = etree.fromstring(document_xml, parser=XML_PARSER)
     run, target = _require_target_text_element(root, text_xpath)
     text_value = target.text or ""
     insert_at = list(run).index(target)
@@ -62,12 +80,12 @@ def replace_text_with_symbols(document_xml: bytes, text_xpath: str) -> tuple[byt
     if text_value:
         symbol_font = _resolve_symbol_font(run)
         for offset, character in enumerate(text_value):
-            symbol = ET.Element(f"{WORD_TAG_PREFIX}sym")
-            symbol.set(f"{WORD_TAG_PREFIX}font", symbol_font)
-            symbol.set(f"{WORD_TAG_PREFIX}char", f"{ord(character):04X}")
+            symbol = etree.Element(_w_namespaced("sym"), nsmap=run.nsmap)
+            symbol.set(_w_namespaced("font"), symbol_font)
+            symbol.set(_w_namespaced("char"), f"{ord(character):04X}")
             run.insert(insert_at + offset, symbol)
 
-    updated_document_xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    updated_document_xml = _serialize_xml(root)
     return updated_document_xml, len(text_value)
 
 
