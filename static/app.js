@@ -1,4 +1,6 @@
-// Wait for the Superdoc UMD bundle to register the global, then mount.
+// Superdoc only ships ESM; load it from esm.sh as a module (no UMD bundle exists).
+import { SuperDoc } from 'https://esm.sh/superdoc@1.32.0';
+
 let superdoc = null;
 
 async function fetchDocBlob() {
@@ -8,11 +10,6 @@ async function fetchDocBlob() {
 }
 
 async function mountSuperdoc() {
-  const SuperDocCtor = window.SuperDoc?.SuperDoc ?? window.SuperDoc;
-  if (typeof SuperDocCtor !== 'function') {
-    console.error('SuperDoc global not available', window.SuperDoc);
-    return;
-  }
   // Tear down a prior instance if present so re-mounts pick up the new file.
   if (superdoc?.destroy) {
     try { superdoc.destroy(); } catch (e) { /* ignore */ }
@@ -23,7 +20,7 @@ async function mountSuperdoc() {
   const blob = await fetchDocBlob();
   const file = new File([blob], 'current.docx', { type: blob.type });
 
-  superdoc = new SuperDocCtor({
+  superdoc = new SuperDoc({
     selector: '#superdoc',
     toolbar: '#superdoc-toolbar',
     document: file,
@@ -95,10 +92,6 @@ function wireDropzone() {
 }
 
 async function boot() {
-  // The Superdoc UMD script is type=module and loads async; poll briefly.
-  for (let i = 0; i < 50 && !window.SuperDoc; i++) {
-    await new Promise((r) => setTimeout(r, 100));
-  }
   wireButtons();
   wireDropzone();
   await mountSuperdoc();
