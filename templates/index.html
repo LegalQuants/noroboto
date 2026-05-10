@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>No Roboto — DOCx encoding PoC</title>
+  <link rel="stylesheet" href="https://unpkg.com/superdoc/dist/style.css" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+</head>
+<body>
+  <header>
+    <h1>No Roboto</h1>
+    <p class="subtitle">Hidden text in <code>.docx</code> — proof of concept</p>
+  </header>
+
+  <section id="controls">
+    <button id="btn-show">Show highlighted text</button>
+    <button id="btn-inject">Inject payload</button>
+    <div id="dropzone">Drag a <code>.docx</code> here to load it</div>
+  </section>
+
+  <div id="superdoc-toolbar"></div>
+  <div id="superdoc"></div>
+
+  <script type="module" src="https://unpkg.com/superdoc/dist/superdoc.umd.js"></script>
+  <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

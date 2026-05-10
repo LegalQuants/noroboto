@@ -1,0 +1,76 @@
+:root {
+  --bg: #0f1115;
+  --panel: #161a22;
+  --fg: #e6e8ec;
+  --muted: #8a92a3;
+  --accent: #4f8cff;
+  --danger: #ff4f6d;
+  --border: #2a3140;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  padding: 1.5rem;
+}
+
+header { margin-bottom: 1rem; }
+header h1 { margin: 0; font-size: 1.5rem; }
+header .subtitle { margin: .25rem 0 0; color: var(--muted); font-size: .9rem; }
+
+#controls {
+  display: flex;
+  gap: .75rem;
+  align-items: center;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+button {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: .55rem 1rem;
+  font-size: .9rem;
+  cursor: pointer;
+}
+button:hover { filter: brightness(1.1); }
+#btn-inject { background: var(--danger); }
+
+#dropzone {
+  flex: 1;
+  min-width: 200px;
+  border: 1.5px dashed var(--border);
+  border-radius: 6px;
+  padding: .55rem 1rem;
+  color: var(--muted);
+  font-size: .85rem;
+  text-align: center;
+}
+#dropzone.hover {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+#superdoc-toolbar {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px 6px 0 0;
+  padding: .25rem;
+  min-height: 2.5rem;
+}
+
+#superdoc {
+  background: white;
+  color: black;
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  min-height: 70vh;
+  overflow: auto;
+}
