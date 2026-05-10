@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### 2026-05-10 — Vendor Superdoc locally
+- Added `package.json` pinning `superdoc@1.32.0` and `esbuild@^0.24`.
+- `scripts/build-vendor.mjs` (run via `npm run build:vendor`) bundles
+  Superdoc into a single self-contained ESM file at
+  `static/vendor/superdoc.mjs` (+ `superdoc.css`).
+- `scripts/stub-hocuspocus.mjs` replaces `@hocuspocus/provider` with a no-op,
+  keeping y-protocols / websocket code out of the bundle (we don't use the
+  collab feature).
+- `static/app.js` now imports from `/static/vendor/superdoc.mjs`;
+  `templates/index.html` loads the local CSS. Zero CDN dependency at
+  runtime.
+- Motivation: three separate CDN failures in a row (esm.sh
+  `ERR_CONNECTION_CLOSED` on a transitive `@hocuspocus/provider` URL,
+  `?bundle` mode inlining a second Vue and breaking template refs, jsdelivr
+  `+esm` 404 on `@lifeomic/attempt`). Vendoring eliminates the class of bug.
+- `.gitignore`: `node_modules/`, `package-lock.json`, the build's internal
+  entry shim.
+
+### 2026-05-10 — Phase 5: prove the payload is really in the file
+- `POST /inject` now also writes `payloadAdded.docx` to the repo root and
+  returns `extracted_text` (concatenated `w:t` content — what an LLM sees)
+  and `injected_xml` (the appended `<w:p>` subtree) in its JSON response.
+- New route `GET /payload-added` downloads the most recent
+  `payloadAdded.docx` (`404` until the first injection).
+- New **Proof of injection** panel in the UI shows the extracted-text view,
+  the injected-XML view, and a Download button — closing the gap where
+  Superdoc's rendered DOM hides the hidden run from DevTools.
+- `.gitignore`: `payloadAdded.docx`.
+
 ### 2026-05-10 — Document rendering fix (browser-verified)
 - Switched Superdoc loader from non-existent UMD bundle to ESM via
   `https://esm.sh/superdoc@1.32.0` (resolves the CORS-blocked

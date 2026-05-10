@@ -1,3 +1,7 @@
 __pycache__
 .venv/
 .claude/
+payloadAdded.docx
+node_modules/
+package-lock.json
+static/vendor/__entry.mjs

@@ -1,0 +1,14 @@
+{
+  "name": "noroboto-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:vendor": "node scripts/build-vendor.mjs"
+  },
+  "dependencies": {
+    "superdoc": "1.32.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

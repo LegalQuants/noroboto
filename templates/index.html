@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <title>No Roboto — DOCx encoding PoC</title>
-  <link rel="stylesheet" href="https://unpkg.com/superdoc/dist/style.css" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/superdoc.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
 </head>
 <body>
@@ -20,6 +20,30 @@
 
   <div id="superdoc-toolbar"></div>
   <div id="superdoc"></div>
+
+  <section id="proof" hidden>
+    <header class="proof-header">
+      <h2>Proof of injection</h2>
+      <a id="proof-download" href="/payload-added" download="payloadAdded.docx">
+        Download payloadAdded.docx
+      </a>
+    </header>
+    <p class="proof-blurb">
+      Superdoc hides the injected run, so the web inspector won't show it.
+      The two views below come straight from the modified
+      <code>word/document.xml</code>:
+    </p>
+    <div class="proof-grid">
+      <div>
+        <h3>Extracted text <span class="proof-tag">what an LLM sees</span></h3>
+        <pre id="proof-text"></pre>
+      </div>
+      <div>
+        <h3>Injected XML <span class="proof-tag">what got appended</span></h3>
+        <pre id="proof-xml"></pre>
+      </div>
+    </div>
+  </section>
 
   <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

@@ -1,5 +1,9 @@
-// Superdoc only ships ESM; load it from esm.sh as a module (no UMD bundle exists).
-import { SuperDoc } from 'https://esm.sh/superdoc@1.32.0';
+// Self-hosted Superdoc bundle (see scripts/build-vendor.mjs). Vendoring it
+// eliminates the CDN flakiness we hit with esm.sh and jsdelivr: missing
+// transitive deps, semver-range URL fetch failures, and Vue duplication in
+// `?bundle` mode. Rebuild with `npm run build:vendor` after bumping the
+// superdoc dep.
+import { SuperDoc } from '/static/vendor/superdoc.mjs';
 
 let superdoc = null;
 
@@ -59,9 +63,22 @@ function wireButtons() {
     }
     const data = await res.json();
     await mountSuperdoc();
+    renderProof(data);
     const banner = data.banner ?? '❌ YOU HAVE BEEN HACKED ❌';
     alert(`${selected || '(no selection)'}\n\n${banner}`);
   });
+}
+
+function renderProof(data) {
+  const panel = document.getElementById('proof');
+  document.getElementById('proof-text').textContent = data.extracted_text ?? '';
+  document.getElementById('proof-xml').textContent = data.injected_xml ?? '';
+  // Cache-bust the download link so a fresh injection isn't masked by the
+  // browser's cached copy from a prior click.
+  const link = document.getElementById('proof-download');
+  link.href = `${data.download_url ?? '/payload-added'}?t=${Date.now()}`;
+  panel.hidden = false;
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function wireDropzone() {

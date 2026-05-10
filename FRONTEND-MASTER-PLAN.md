@@ -112,6 +112,82 @@ End-to-end manual test (no automated tests in scope for a PoC):
 6. Confirm the payload is actually in the file: `curl -s http://localhost:5000/current-doc -o out.docx && unzip -p out.docx word/document.xml | grep -c 'YOU HAVE BEEN HACKED'` → `1`.
 7. Confirm a typical LLM-ingest path sees the hidden text: same `unzip -p ... | grep -o 'HACKED'` returns a hit while opening `out.docx` in Word shows nothing extra.
 
+## Phase 5 — Prove the payload is really in the file
+
+**Problem.** Phases 1–4 inject the hidden run server-side and re-render the
+doc in Superdoc. Superdoc strips the hidden run from its rendered DOM (that's
+the whole point of `w:vanish`), so the browser's web inspector shows nothing
+useful — the user has no way to verify the injection happened without leaving
+the app and running `unzip -p` manually. Phase 5 closes that gap.
+
+### Output artifact
+
+On every successful `/inject`, the server writes the modified bytes to
+`payloadAdded.docx` (sibling of `cornellNDA.docx` at the repo root, gitignored)
+in addition to mutating the in-memory active doc. The file is the ground truth:
+the user can open it in Word, attach it to an email, or drop it into an LLM
+chat to demonstrate the asymmetric visibility.
+
+### New backend additions (`app.py`)
+
+- In `/inject`, after `_set_active_doc(new_bytes)`, also
+  `(REPO_ROOT / "payloadAdded.docx").write_bytes(new_bytes)`.
+- Extract the text-only view of `word/document.xml` for the response:
+  walk all `w:t` elements (this is what `python-docx`, `docx2txt`, and most
+  LLM-feeding text extractors see) and concatenate their contents. Include
+  this in the JSON response as `extracted_text` so the front-end can show it.
+- Locate the injected `<w:r>` and serialize just that subtree as
+  `injected_xml` in the response, so the user can see the exact OOXML payload
+  that was appended.
+- New route `GET /payload-added` → serves `payloadAdded.docx` with
+  `Content-Disposition: attachment; filename="payloadAdded.docx"`. Returns
+  `404` if the user hasn't injected yet.
+
+### New frontend additions (`static/app.js`, `templates/index.html`)
+
+Add a collapsible **Proof** panel beneath the Superdoc viewer with three
+elements, populated after `/inject` succeeds:
+
+1. **Download** button → links to `/payload-added`. Lets the user grab the
+   file for external verification.
+2. **Extracted text** `<pre>` → renders the `extracted_text` string from the
+   inject response. The hidden banner appears here because text extractors
+   don't honor `w:vanish`. This is the "what an LLM sees" view.
+3. **Injected XML** `<pre>` → renders the `injected_xml` snippet, syntax
+   shown literally. This is the "what got added to the docx" view.
+
+The existing post-injection alert stays but becomes a confirmation; the panel
+is where the real demonstration happens.
+
+### Why this works as proof
+
+- **Browser view (Superdoc)**: payload is invisible → human signer doesn't see
+  it.
+- **Extracted-text view (Proof panel)**: payload is visible → LLM agent sees
+  it.
+- **Downloaded file**: payload survives outside the demo, openable in Word
+  (still invisible) and grep-able from the shell (visible). The file artifact
+  prevents accusations that the proof panel is hand-waving.
+
+### Files changed/added
+
+- `app.py` — `/inject` writes `payloadAdded.docx` + returns extracted text and
+  injected XML; new `/payload-added` download route.
+- `static/app.js` — populate the new Proof panel after injection.
+- `templates/index.html` — markup for the panel and a hidden Download button.
+- `static/app.css` — styling for the panel.
+- `.gitignore` — add `payloadAdded.docx`.
+
+### Verification (Phase 5)
+
+1. Boot server, render `cornellNDA.docx`.
+2. Highlight a sentence, click **Inject payload**.
+3. Proof panel populates: extracted text contains `YOU HAVE BEEN HACKED` and
+   the echoed selection; injected XML shows the `<w:r>` with `w:vanish`.
+4. Click **Download** — `payloadAdded.docx` saves locally.
+5. `unzip -p payloadAdded.docx word/document.xml | grep -c 'HACKED'` → `1`.
+6. Open `payloadAdded.docx` in Word — no visible change vs. the original.
+
 ## Out of scope (deliberate)
 
 - Persistence across server restarts.

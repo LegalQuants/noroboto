@@ -17,6 +17,7 @@ from flask import Flask, abort, jsonify, render_template, request, send_file
 
 REPO_ROOT = Path(__file__).parent
 DEFAULT_DOC = REPO_ROOT / "cornellNDA.docx"
+PAYLOAD_ADDED_DOC = REPO_ROOT / "payloadAdded.docx"
 
 # OOXML WordprocessingML namespace. Constants are duplicated as `{ns}tag` form
 # (`W`) and as a prefix map (`NS`) because ElementTree wants the former for
@@ -55,8 +56,18 @@ def _set_active_doc(payload: bytes) -> None:
     _state["doc"] = payload
 
 
-def inject_payload(docx_bytes: bytes, selection_text: str) -> bytes:
-    """Return a copy of `docx_bytes` with a hidden run appended to the body.
+def _extract_visible_text(root: ET.Element) -> str:
+    """Concatenate every `w:t` text element under `root`, joined by spaces.
+
+    This is the view that naive docx text extractors (python-docx's
+    `paragraph.text`, docx2txt, most LLM ingest pipelines) produce — they
+    don't honor `w:vanish`, so hidden runs leak into their output.
+    """
+    return " ".join((t.text or "") for t in root.iterfind(".//w:t", NS))
+
+
+def inject_payload(docx_bytes: bytes, selection_text: str) -> tuple[bytes, str, str]:
+    """Append a hidden run to the body. Return (new_bytes, injected_xml, extracted_text).
 
     The technique: a `.docx` is a ZIP of XML parts; `word/document.xml` carries
     the visible text. We append a new `<w:p><w:r>` whose `w:rPr` contains
@@ -64,6 +75,10 @@ def inject_payload(docx_bytes: bytes, selection_text: str) -> bytes:
     nothing for it, but the text is still present in the XML stream that LLM
     text extractors and `unzip -p` will see — which is the whole point of the
     demo.
+
+    `injected_xml` is the serialized `<w:p>` subtree that was appended (for the
+    Proof panel). `extracted_text` is what `_extract_visible_text` produces
+    against the modified document, i.e. what an LLM would see.
     """
     in_buf = BytesIO(docx_bytes)
     out_buf = BytesIO()
@@ -104,6 +119,8 @@ def inject_payload(docx_bytes: bytes, selection_text: str) -> bytes:
     text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
     text.text = payload_text
 
+    injected_xml = ET.tostring(paragraph, encoding="unicode")
+    extracted_text = _extract_visible_text(root)
     new_document_xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
     with ZipFile(out_buf, mode="w", compression=ZIP_DEFLATED) as dst:
@@ -111,7 +128,7 @@ def inject_payload(docx_bytes: bytes, selection_text: str) -> bytes:
             dst.writestr(name, data)
         dst.writestr("word/document.xml", new_document_xml)
 
-    return out_buf.getvalue()
+    return out_buf.getvalue(), injected_xml, extracted_text
 
 
 @app.get("/")
@@ -156,9 +173,32 @@ def upload():
 def inject():
     body = request.get_json(silent=True) or {}
     selection = (body.get("selected_text") or "").strip()
-    new_bytes = inject_payload(_active_doc(), selection)
+    new_bytes, injected_xml, extracted_text = inject_payload(_active_doc(), selection)
     _set_active_doc(new_bytes)
-    return jsonify({"ok": True, "banner": HACK_BANNER, "selected_text": selection})
+    # Phase 5: write a ground-truth artifact to disk so the user (or a
+    # downstream tool) can verify the payload without going through the
+    # Superdoc-rendered DOM, which strips hidden runs.
+    PAYLOAD_ADDED_DOC.write_bytes(new_bytes)
+    return jsonify({
+        "ok": True,
+        "banner": HACK_BANNER,
+        "selected_text": selection,
+        "injected_xml": injected_xml,
+        "extracted_text": extracted_text,
+        "download_url": "/payload-added",
+    })
+
+
+@app.get("/payload-added")
+def payload_added():
+    if not PAYLOAD_ADDED_DOC.exists():
+        abort(404, "no payloadAdded.docx yet — run /inject first")
+    return send_file(
+        PAYLOAD_ADDED_DOC,
+        mimetype=DOCX_MIME,
+        as_attachment=True,
+        download_name="payloadAdded.docx",
+    )
 
 
 if __name__ == "__main__":
