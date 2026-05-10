@@ -1,3 +1,11 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+The remainder of this file is the project brief.
+
+---
+
 # No Roboto - purpose
 Create a proof of concept for hiding text in documents
 
