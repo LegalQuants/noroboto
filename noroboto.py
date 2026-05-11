@@ -476,27 +476,23 @@ def _require_target_text_element(root: etree._Element, text_xpath: str) -> tuple
     return run, target
 
 
-def replace_text_with_symbols(document_xml: bytes, text_xpath: str, builds: dict[str, NorobotoBuild]) -> tuple[bytes, int, str]:
+def replace_text_with_pua_text(document_xml: bytes, text_xpath: str, builds: dict[str, NorobotoBuild]) -> tuple[bytes, int, str]:
     root = _parse_xml(document_xml)
     run, target = _require_target_text_element(root, text_xpath)
     build = _select_build_for_run(run, builds)
     text_value = target.text or ""
-    insert_at = list(run).index(target)
     _ensure_run_uses_font(run, build.family_name)
-    run.remove(target)
+    remapped_characters: list[str] = []
+    for character in text_value:
+        codepoint = ord(character)
+        shuffled_codepoint = build.mapping.get(codepoint)
+        if shuffled_codepoint is None:
+            raise ValueError(
+                f"Character {character!r} (U+{codepoint:04X}) is not available in the {build.display_name} mapping"
+            )
+        remapped_characters.append(chr(shuffled_codepoint))
 
-    if text_value:
-        for offset, character in enumerate(text_value):
-            codepoint = ord(character)
-            shuffled_codepoint = build.mapping.get(codepoint)
-            if shuffled_codepoint is None:
-                raise ValueError(
-                    f"Character {character!r} (U+{codepoint:04X}) is not available in the {build.display_name} mapping"
-                )
-            symbol = etree.Element(_w_namespaced("sym"), nsmap=run.nsmap)
-            symbol.set(_w_namespaced("font"), build.family_name)
-            symbol.set(_w_namespaced("char"), f"{shuffled_codepoint:04X}")
-            run.insert(insert_at + offset, symbol)
+    target.text = "".join(remapped_characters)
 
     updated_document_xml = _serialize_xml(root)
     return updated_document_xml, len(text_value), build.display_name
@@ -597,7 +593,7 @@ def _update_settings(settings_xml: bytes | None) -> bytes | None:
     return _serialize_xml(root)
 
 
-def replace_text_element_with_symbols(
+def replace_text_element_with_pua_text(
     docx_bytes: bytes,
     text_xpath: str,
     builds: dict[str, NorobotoBuild],
@@ -616,7 +612,7 @@ def replace_text_element_with_symbols(
         if document_xml is None:
             raise KeyError(f"DOCX part not found: {DOCX_DOCUMENT_PART}")
 
-        payloads[DOCX_DOCUMENT_PART], replacement_count, selected_family_name = replace_text_with_symbols(
+        payloads[DOCX_DOCUMENT_PART], replacement_count, selected_family_name = replace_text_with_pua_text(
             document_xml,
             text_xpath,
             builds,
@@ -683,7 +679,7 @@ if __name__ == '__main__':
         key: build_noroboto_font(variant, family_mappings[variant.family_key])
         for key, variant in NOROBOTO_VARIANTS.items()
     }
-    updated_docx, replacement_count, selected_font_name = replace_text_element_with_symbols(
+    updated_docx, replacement_count, selected_font_name = replace_text_element_with_pua_text(
         Path("./nda.docx").read_bytes(),
         text_xpath,
         builds,
