@@ -69,7 +69,7 @@ def _build_variant(
         family_name=family_name,
         subfamily_name=subfamily_name,
         postscript_name=postscript_name,
-        base_font_path=Path(base_font_filename),
+        base_font_path=Path("fonts").joinpath(base_font_filename),
         embedded_font_part=f"word/fonts/{embedded_font_filename}",
         embedded_font_rel_target=f"fonts/{embedded_font_filename}",
         word_family=word_family,
