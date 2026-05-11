@@ -16,10 +16,8 @@ DOCX_SETTINGS_PART = "word/settings.xml"
 DOCX_FONT_TABLE_PART = "word/fontTable.xml"
 DOCX_DOCUMENT_RELS_PART = "word/_rels/document.xml.rels"
 DOCX_FONT_TABLE_RELS_PART = "word/_rels/fontTable.xml.rels"
-DOCX_EMBEDDED_FONT_PART = "word/fonts/noroboto.odttf"
 DOCX_CONTENT_TYPES_PART = "[Content_Types].xml"
 DOCX_FONT_TABLE_REL_TARGET = "fontTable.xml"
-DOCX_EMBEDDED_FONT_REL_TARGET = "fonts/noroboto.odttf"
 WORDPROCESSINGML_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 PACKAGE_RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 OFFICE_RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -28,8 +26,6 @@ FONT_RELATIONSHIP_TYPE = f"{OFFICE_RELATIONSHIPS_NS}/font"
 FONT_TABLE_RELATIONSHIP_TYPE = f"{OFFICE_RELATIONSHIPS_NS}/fontTable"
 OBFUSCATED_FONT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.obfuscatedFont"
 FONT_TABLE_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"
-NOROBOTO_FONT_FAMILY = "Noroboto"
-NOROBOTO_POSTSCRIPT_NAME = "Noroboto-Regular"
 PUA_START = 0xE000
 PUA_END = 0xF8FF
 XML_NAMESPACES = {"w": WORDPROCESSINGML_NS, "r": OFFICE_RELATIONSHIPS_NS}
@@ -37,12 +33,50 @@ XML_PARSER = etree.XMLParser(remove_blank_text=False, resolve_entities=False)
 
 
 @dataclass(frozen=True)
-class NorobotoBuild:
+class NorobotoVariant:
     family_name: str
+    postscript_name: str
+    base_font_path: Path
+    output_font_path: Path
+    embedded_font_part: str
+    embedded_font_rel_target: str
+    word_family: str
+
+
+NOROBOTO_SERIF = NorobotoVariant(
+    family_name="Noroboto Serif",
+    postscript_name="NorobotoSerif-Regular",
+    base_font_path=Path("./liberation-serif.ttf"),
+    output_font_path=Path("./noroboto-serif.ttf"),
+    embedded_font_part="word/fonts/noroboto-serif.odttf",
+    embedded_font_rel_target="fonts/noroboto-serif.odttf",
+    word_family="roman",
+)
+
+NOROBOTO_SANS = NorobotoVariant(
+    family_name="Noroboto Sans",
+    postscript_name="NorobotoSans-Regular",
+    base_font_path=Path("./liberation-sans.ttf"),
+    output_font_path=Path("./noroboto-sans.ttf"),
+    embedded_font_part="word/fonts/noroboto-sans.odttf",
+    embedded_font_rel_target="fonts/noroboto-sans.odttf",
+    word_family="swiss",
+)
+
+ARIAL_FONT_NAMES = {"Arial"}
+
+
+@dataclass(frozen=True)
+class NorobotoBuild:
+    variant: NorobotoVariant
     mapping: dict[int, int]
     font_bytes: bytes
     obfuscated_font_bytes: bytes
     font_key: str
+
+    @property
+    def family_name(self) -> str:
+        return self.variant.family_name
 
 
 def _w_namespaced(local_name: str) -> str:
@@ -174,8 +208,9 @@ def _obfuscate_font_bytes(font_bytes: bytes, font_key: str) -> bytes:
     return bytes(obfuscated)
 
 
-def _set_font_names(font: TTFont, family_name: str) -> None:
+def _set_font_names(font: TTFont, variant: NorobotoVariant) -> None:
     name_table = font["name"]
+    family_name = variant.family_name
     full_name = f"{family_name} Regular"
     unique_name = f"{family_name};RandomizedSymbolEncoding"
     values = {
@@ -183,7 +218,7 @@ def _set_font_names(font: TTFont, family_name: str) -> None:
         2: "Regular",
         3: unique_name,
         4: full_name,
-        6: NOROBOTO_POSTSCRIPT_NAME,
+        6: variant.postscript_name,
         16: family_name,
         17: "Regular",
     }
@@ -200,8 +235,32 @@ def _eligible_codepoints(best_cmap: dict[int, str]) -> list[int]:
     ]
 
 
-def build_noroboto_font(base_font_path: Path, output_font_path: Path) -> NorobotoBuild:
-    font = TTFont(str(base_font_path))
+def _run_font_names(run: etree._Element) -> list[str]:
+    run_properties = run.find("w:rPr", XML_NAMESPACES)
+    if run_properties is None:
+        return []
+
+    r_fonts = run_properties.find("w:rFonts", XML_NAMESPACES)
+    if r_fonts is None:
+        return []
+
+    font_names: list[str] = []
+    for attribute in ("ascii", "hAnsi", "cs", "eastAsia"):
+        font_name = r_fonts.get(_w_namespaced(attribute))
+        if font_name and font_name not in font_names:
+            font_names.append(font_name)
+    return font_names
+
+
+def _select_build_for_run(run: etree._Element, builds: dict[str, NorobotoBuild]) -> NorobotoBuild:
+    run_font_names = set(_run_font_names(run))
+    if run_font_names & ARIAL_FONT_NAMES:
+        return builds["sans"]
+    return builds["serif"]
+
+
+def build_noroboto_font(variant: NorobotoVariant) -> NorobotoBuild:
+    font = TTFont(str(variant.base_font_path))
     best_cmap = font["cmap"].getBestCmap() or {}
     eligible_codepoints = _eligible_codepoints(best_cmap)
     available_pua_codepoints = list(range(PUA_START, PUA_END + 1))
@@ -223,14 +282,14 @@ def build_noroboto_font(base_font_path: Path, output_font_path: Path) -> Norobot
             if glyph_name is not None:
                 subtable.cmap[shuffled_codepoint] = glyph_name
 
-    _set_font_names(font, NOROBOTO_FONT_FAMILY)
-    font.save(str(output_font_path))
+    _set_font_names(font, variant)
+    font.save(str(variant.output_font_path))
     font.close()
 
-    font_bytes = output_font_path.read_bytes()
+    font_bytes = variant.output_font_path.read_bytes()
     font_key = "{" + str(uuid4()).upper() + "}"
     return NorobotoBuild(
-        family_name=NOROBOTO_FONT_FAMILY,
+        variant=variant,
         mapping=mapping,
         font_bytes=font_bytes,
         obfuscated_font_bytes=_obfuscate_font_bytes(font_bytes, font_key),
@@ -256,9 +315,10 @@ def _require_target_text_element(root: etree._Element, text_xpath: str) -> tuple
     return run, target
 
 
-def replace_text_with_symbols(document_xml: bytes, text_xpath: str, build: NorobotoBuild) -> tuple[bytes, int]:
+def replace_text_with_symbols(document_xml: bytes, text_xpath: str, builds: dict[str, NorobotoBuild]) -> tuple[bytes, int, str]:
     root = _parse_xml(document_xml)
     run, target = _require_target_text_element(root, text_xpath)
+    build = _select_build_for_run(run, builds)
     text_value = target.text or ""
     insert_at = list(run).index(target)
     _ensure_run_uses_font(run, build.family_name)
@@ -269,45 +329,56 @@ def replace_text_with_symbols(document_xml: bytes, text_xpath: str, build: Norob
             codepoint = ord(character)
             shuffled_codepoint = build.mapping.get(codepoint)
             if shuffled_codepoint is None:
-                raise ValueError(f"Character {character!r} (U+{codepoint:04X}) is not available in the Noroboto mapping")
+                raise ValueError(
+                    f"Character {character!r} (U+{codepoint:04X}) is not available in the {build.family_name} mapping"
+                )
             symbol = etree.Element(_w_namespaced("sym"), nsmap=run.nsmap)
             symbol.set(_w_namespaced("font"), build.family_name)
             symbol.set(_w_namespaced("char"), f"{shuffled_codepoint:04X}")
             run.insert(insert_at + offset, symbol)
 
     updated_document_xml = _serialize_xml(root)
-    return updated_document_xml, len(text_value)
+    return updated_document_xml, len(text_value), build.family_name
 
 
-def _update_font_table(font_table_xml: bytes | None, build: NorobotoBuild, font_relationship_id: str) -> bytes:
+def _update_font_table(
+    font_table_xml: bytes | None,
+    builds: dict[str, NorobotoBuild],
+    font_relationship_ids: dict[str, str],
+) -> bytes:
     if font_table_xml is None:
         root = _create_root("fonts", WORDPROCESSINGML_NS, {"w": WORDPROCESSINGML_NS, "r": OFFICE_RELATIONSHIPS_NS})
     else:
         root = _parse_xml(font_table_xml)
 
-    font_element = None
-    for candidate in root.findall("w:font", _xpath_namespaces(root)):
-        if candidate.get(_w_namespaced("name")) == build.family_name:
-            font_element = candidate
-            break
-    if font_element is None:
-        font_element = etree.Element(_w_namespaced("font"), nsmap=root.nsmap)
-        font_element.set(_w_namespaced("name"), build.family_name)
-        root.append(font_element)
+    for build_key, build in builds.items():
+        font_element = None
+        for candidate in root.findall("w:font", _xpath_namespaces(root)):
+            if candidate.get(_w_namespaced("name")) == build.family_name:
+                font_element = candidate
+                break
+        if font_element is None:
+            font_element = etree.Element(_w_namespaced("font"), nsmap=root.nsmap)
+            font_element.set(_w_namespaced("name"), build.family_name)
+            root.append(font_element)
 
-    for local_name, value in (("charset", "00"), ("family", "roman"), ("pitch", "variable")):
-        child = font_element.find(f"w:{local_name}", XML_NAMESPACES)
-        if child is None:
-            child = etree.Element(_w_namespaced(local_name), nsmap=font_element.nsmap)
-            font_element.append(child)
-        child.set(_w_namespaced("val"), value)
+        for local_name, value in (
+            ("charset", "00"),
+            ("family", build.variant.word_family),
+            ("pitch", "variable"),
+        ):
+            child = font_element.find(f"w:{local_name}", XML_NAMESPACES)
+            if child is None:
+                child = etree.Element(_w_namespaced(local_name), nsmap=font_element.nsmap)
+                font_element.append(child)
+            child.set(_w_namespaced("val"), value)
 
-    embed_regular = font_element.find("w:embedRegular", XML_NAMESPACES)
-    if embed_regular is None:
-        embed_regular = etree.Element(_w_namespaced("embedRegular"), nsmap=font_element.nsmap)
-        font_element.append(embed_regular)
-    embed_regular.set(_office_relationship_namespaced("id"), font_relationship_id)
-    embed_regular.set(_w_namespaced("fontKey"), build.font_key)
+        embed_regular = font_element.find("w:embedRegular", XML_NAMESPACES)
+        if embed_regular is None:
+            embed_regular = etree.Element(_w_namespaced("embedRegular"), nsmap=font_element.nsmap)
+            font_element.append(embed_regular)
+        embed_regular.set(_office_relationship_namespaced("id"), font_relationship_ids[build_key])
+        embed_regular.set(_w_namespaced("fontKey"), build.font_key)
 
     return _serialize_xml(root)
 
@@ -321,19 +392,30 @@ def _update_document_relationships(document_rels_xml: bytes | None) -> bytes:
     return _serialize_xml(root)
 
 
-def _update_font_table_relationships(font_table_rels_xml: bytes | None) -> tuple[bytes, str]:
+def _update_font_table_relationships(
+    font_table_rels_xml: bytes | None,
+    builds: dict[str, NorobotoBuild],
+) -> tuple[bytes, dict[str, str]]:
     if font_table_rels_xml is None:
         root = _create_root("Relationships", PACKAGE_RELATIONSHIPS_NS, {None: PACKAGE_RELATIONSHIPS_NS})
     else:
         root = _parse_xml(font_table_rels_xml)
-    relationship_id = _ensure_package_relationship(root, FONT_RELATIONSHIP_TYPE, DOCX_EMBEDDED_FONT_REL_TARGET)
-    return _serialize_xml(root), relationship_id
+
+    relationship_ids: dict[str, str] = {}
+    for build_key, build in builds.items():
+        relationship_ids[build_key] = _ensure_package_relationship(
+            root,
+            FONT_RELATIONSHIP_TYPE,
+            build.variant.embedded_font_rel_target,
+        )
+    return _serialize_xml(root), relationship_ids
 
 
-def _update_content_types(content_types_xml: bytes) -> bytes:
+def _update_content_types(content_types_xml: bytes, builds: dict[str, NorobotoBuild]) -> bytes:
     root = _parse_xml(content_types_xml)
     _ensure_content_type_override(root, "/word/fontTable.xml", FONT_TABLE_CONTENT_TYPE)
-    _ensure_content_type_override(root, "/word/fonts/noroboto.odttf", OBFUSCATED_FONT_CONTENT_TYPE)
+    for build in builds.values():
+        _ensure_content_type_override(root, f"/{build.variant.embedded_font_part}", OBFUSCATED_FONT_CONTENT_TYPE)
     return _serialize_xml(root)
 
 
@@ -346,11 +428,16 @@ def _update_settings(settings_xml: bytes | None) -> bytes | None:
     return _serialize_xml(root)
 
 
-def replace_text_element_with_symbols(docx_bytes: bytes, text_xpath: str, build: NorobotoBuild) -> tuple[bytes, int]:
+def replace_text_element_with_symbols(
+    docx_bytes: bytes,
+    text_xpath: str,
+    builds: dict[str, NorobotoBuild],
+) -> tuple[bytes, int, str]:
     input_buffer = BytesIO(docx_bytes)
     output_buffer = BytesIO()
     replacement_count = 0
     document_part_found = False
+    selected_family_name = ""
 
     with zipfile.ZipFile(input_buffer, mode="r") as source_archive:
         original_infos = {info.filename: copy(info) for info in source_archive.infolist()}
@@ -360,20 +447,30 @@ def replace_text_element_with_symbols(docx_bytes: bytes, text_xpath: str, build:
         if document_xml is None:
             raise KeyError(f"DOCX part not found: {DOCX_DOCUMENT_PART}")
 
-        payloads[DOCX_DOCUMENT_PART], replacement_count = replace_text_with_symbols(document_xml, text_xpath, build)
+        payloads[DOCX_DOCUMENT_PART], replacement_count, selected_family_name = replace_text_with_symbols(
+            document_xml,
+            text_xpath,
+            builds,
+        )
         document_part_found = True
         payloads[DOCX_DOCUMENT_RELS_PART] = _update_document_relationships(payloads.get(DOCX_DOCUMENT_RELS_PART))
-        payloads[DOCX_FONT_TABLE_RELS_PART], font_relationship_id = _update_font_table_relationships(
-            payloads.get(DOCX_FONT_TABLE_RELS_PART)
+        payloads[DOCX_FONT_TABLE_RELS_PART], font_relationship_ids = _update_font_table_relationships(
+            payloads.get(DOCX_FONT_TABLE_RELS_PART),
+            builds,
         )
-        payloads[DOCX_FONT_TABLE_PART] = _update_font_table(payloads.get(DOCX_FONT_TABLE_PART), build, font_relationship_id)
-        payloads[DOCX_CONTENT_TYPES_PART] = _update_content_types(payloads[DOCX_CONTENT_TYPES_PART])
+        payloads[DOCX_FONT_TABLE_PART] = _update_font_table(
+            payloads.get(DOCX_FONT_TABLE_PART),
+            builds,
+            font_relationship_ids,
+        )
+        payloads[DOCX_CONTENT_TYPES_PART] = _update_content_types(payloads[DOCX_CONTENT_TYPES_PART], builds)
 
         updated_settings = _update_settings(payloads.get(DOCX_SETTINGS_PART))
         if updated_settings is not None:
             payloads[DOCX_SETTINGS_PART] = updated_settings
 
-        payloads[DOCX_EMBEDDED_FONT_PART] = build.obfuscated_font_bytes
+        for build in builds.values():
+            payloads[build.variant.embedded_font_part] = build.obfuscated_font_bytes
 
         ordered_names = [info.filename for info in source_archive.infolist()]
         for part_name in payloads:
@@ -392,16 +489,22 @@ def replace_text_element_with_symbols(docx_bytes: bytes, text_xpath: str, build:
     if not document_part_found:
         raise KeyError(f"DOCX part not found: {DOCX_DOCUMENT_PART}")
 
-    return output_buffer.getvalue(), replacement_count
+    return output_buffer.getvalue(), replacement_count, selected_family_name
 
 
 if __name__ == '__main__':
     text_xpath = "w:body/w:p/w:r/w:t"
-    build = build_noroboto_font(Path("./liberation-serif.ttf"), Path("./noroboto.ttf"))
-    updated_docx, replacement_count = replace_text_element_with_symbols(
+    builds = {
+        "serif": build_noroboto_font(NOROBOTO_SERIF),
+        "sans": build_noroboto_font(NOROBOTO_SANS),
+    }
+    updated_docx, replacement_count, selected_family_name = replace_text_element_with_symbols(
         Path("./nda.docx").read_bytes(),
         text_xpath,
-        build,
+        builds,
     )
     Path("./output.docx").write_bytes(updated_docx)
-    print(f"Generated noroboto.ttf with {len(build.mapping)} shuffled duplicate glyph mappings and replaced {replacement_count} characters")
+    print(
+        f"Generated {builds['serif'].variant.output_font_path.name} and {builds['sans'].variant.output_font_path.name}; "
+        f"used {selected_family_name} for substitution and replaced {replacement_count} characters"
+    )
