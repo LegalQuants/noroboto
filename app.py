@@ -26,16 +26,9 @@ INDEX_HTML = """<!doctype html>
             <label for=\"docx\">Choose a .docx file:</label>
             <input id=\"docx\" name=\"docx\" type=\"file\" accept=\".docx\" required>
         </p>
-        <p>
-            <button type=\"submit\">Upload and convert</button>
-        </p>
     </form>
-    <div id=\"drop-zone\" tabindex=\"0\">
-        <p>Or drop a .docx file here.</p>
-    </div>
     <script>
         const uploadForm = document.getElementById('upload-form');
-        const dropZone = document.getElementById('drop-zone');
         const fileInput = document.getElementById('docx');
 
         function setFile(file) {
@@ -51,20 +44,10 @@ INDEX_HTML = """<!doctype html>
             }
         }
 
-        function handleDrop(event) {
-            event.preventDefault();
-            const [file] = event.dataTransfer.files;
-            submitIfDocx(file);
-        }
-
         fileInput.addEventListener('change', () => {
             const [file] = fileInput.files;
             submitIfDocx(file);
         });
-        dropZone.addEventListener('dragover', (event) => {
-            event.preventDefault();
-        });
-        dropZone.addEventListener('drop', handleDrop);
     </script>
 </body>
 </html>
