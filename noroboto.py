@@ -448,44 +448,51 @@ def build_noroboto_font(variant: NorobotoVariant, mapping: dict[int, int]) -> No
     )
 
 
-def _require_target_text_element(root: etree._Element, text_xpath: str) -> tuple[etree._Element, etree._Element]:
+def _require_target_text_elements(root: etree._Element, text_xpath: str) -> list[tuple[etree._Element, etree._Element]]:
     targets = root.xpath(text_xpath, namespaces=_xpath_namespaces(root))
     if not targets:
         raise ValueError(f"Text element not found for xpath: {text_xpath}")
-    target = targets[0]
-    if not isinstance(target, etree._Element):
-        raise ValueError(f"XPath must resolve to an element: {text_xpath}")
-    if target.tag != _w_namespaced("t"):
-        raise ValueError(f"XPath must resolve to a w:t element: {text_xpath}")
+    resolved_targets: list[tuple[etree._Element, etree._Element]] = []
+    for target in targets:
+        if not isinstance(target, etree._Element):
+            raise ValueError(f"XPath must resolve to elements: {text_xpath}")
+        if target.tag != _w_namespaced("t"):
+            raise ValueError(f"XPath must resolve to w:t elements: {text_xpath}")
 
-    run = target.getparent()
-    if run is None:
-        raise ValueError("Target text element has no parent run")
-    if run.tag != _w_namespaced("r"):
-        raise ValueError("Target text element must be a direct child of w:r")
-    return run, target
+        run = target.getparent()
+        if run is None:
+            raise ValueError("Target text element has no parent run")
+        if run.tag != _w_namespaced("r"):
+            raise ValueError("Target text element must be a direct child of w:r")
+        resolved_targets.append((run, target))
+    return resolved_targets
 
 
 def replace_text_with_pua_text(document_xml: bytes, text_xpath: str, builds: dict[str, NorobotoBuild]) -> tuple[bytes, int, str]:
     root = _parse_xml(document_xml)
-    run, target = _require_target_text_element(root, text_xpath)
-    build = _select_build_for_run(run, builds)
-    text_value = target.text or ""
-    _ensure_run_uses_font(run, build.family_name)
-    remapped_characters: list[str] = []
-    for character in text_value:
-        codepoint = ord(character)
-        shuffled_codepoint = build.mapping.get(codepoint)
-        if shuffled_codepoint is None:
-            raise ValueError(
-                f"Character {character!r} (U+{codepoint:04X}) is not available in the {build.display_name} mapping"
-            )
-        remapped_characters.append(chr(shuffled_codepoint))
+    replacement_count = 0
+    selected_family_names: set[str] = set()
+    for run, target in _require_target_text_elements(root, text_xpath):
+        build = _select_build_for_run(run, builds)
+        text_value = target.text or ""
+        _ensure_run_uses_font(run, build.family_name)
+        remapped_characters: list[str] = []
+        for character in text_value:
+            codepoint = ord(character)
+            shuffled_codepoint = build.mapping.get(codepoint)
+            if shuffled_codepoint is None:
+                raise ValueError(
+                    f"Character {character!r} (U+{codepoint:04X}) is not available in the {build.display_name} mapping"
+                )
+            remapped_characters.append(chr(shuffled_codepoint))
 
-    target.text = "".join(remapped_characters)
+        target.text = "".join(remapped_characters)
+        replacement_count += len(text_value)
+        selected_family_names.add(build.family_name)
 
     updated_document_xml = _serialize_xml(root)
-    return updated_document_xml, len(text_value), build.display_name
+    family_summary = ", ".join(sorted(selected_family_names))
+    return updated_document_xml, replacement_count, family_summary
 
 
 def _update_font_table(
@@ -646,7 +653,7 @@ def _write_output_docx(docx_bytes: bytes, output_path: Path) -> Path:
 
 
 if __name__ == '__main__':
-    text_xpath = "w:body/w:p/w:r/w:t"
+    text_xpath = ".//w:t"
     family_mappings = {
         family_key: _family_mapping_for_variants(
             [variant for variant in NOROBOTO_VARIANTS.values() if variant.family_key == family_key]
