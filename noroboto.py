@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import random
 import unicodedata
 import zipfile
@@ -31,6 +32,7 @@ PUA_START = 0xE000
 PUA_END = 0xF8FF
 XML_NAMESPACES = {"w": WORDPROCESSINGML_NS, "r": OFFICE_RELATIONSHIPS_NS}
 XML_PARSER = etree.XMLParser(remove_blank_text=False, resolve_entities=False)
+DEFAULT_TEXT_XPATH = ".//w:t"
 
 
 @dataclass(frozen=True)
@@ -458,6 +460,19 @@ def build_noroboto_font(variant: NorobotoVariant, mapping: dict[int, int]) -> No
     )
 
 
+def build_noroboto_builds() -> dict[str, NorobotoBuild]:
+    family_mappings = {
+        family_key: _family_mapping_for_variants(
+            [variant for variant in NOROBOTO_VARIANTS.values() if variant.family_key == family_key]
+        )
+        for family_key in {variant.family_key for variant in NOROBOTO_VARIANTS.values()}
+    }
+    return {
+        key: build_noroboto_font(variant, family_mappings[variant.family_key])
+        for key, variant in NOROBOTO_VARIANTS.items()
+    }
+
+
 def _require_target_text_elements(root: etree._Element, text_xpath: str) -> list[tuple[etree._Element, etree._Element]]:
     targets = root.xpath(text_xpath, namespaces=_xpath_namespaces(root))
     if not targets:
@@ -665,26 +680,33 @@ def _write_output_docx(docx_bytes: bytes, output_path: Path) -> Path:
         return fallback_path
 
 
-if __name__ == '__main__':
-    text_xpath = ".//w:t"
-    family_mappings = {
-        family_key: _family_mapping_for_variants(
-            [variant for variant in NOROBOTO_VARIANTS.values() if variant.family_key == family_key]
-        )
-        for family_key in {variant.family_key for variant in NOROBOTO_VARIANTS.values()}
-    }
-    builds = {
-        key: build_noroboto_font(variant, family_mappings[variant.family_key])
-        for key, variant in NOROBOTO_VARIANTS.items()
-    }
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Apply Noroboto to a .docx file.")
+    parser.add_argument("input_path", help="Path to the input .docx file")
+    parser.add_argument(
+        "output_path",
+        nargs="?",
+        default="noroboto.docx",
+        help="Path to write the Noroboto output .docx file",
+    )
+    args = parser.parse_args(argv)
+
+    input_path = Path(args.input_path)
+    output_path = Path(args.output_path)
+    builds = build_noroboto_builds()
     updated_docx, replacement_count, selected_font_name = replace_text_element_with_pua_text(
-        Path("./nda.docx").read_bytes(),
-        text_xpath,
+        input_path.read_bytes(),
+        DEFAULT_TEXT_XPATH,
         builds,
     )
-    output_path = _write_output_docx(updated_docx, Path("./output.docx"))
+    written_path = _write_output_docx(updated_docx, output_path)
     print(
         f"Built {len(builds)} randomized Noroboto embedded fonts in memory; "
         f"used {selected_font_name} for substitution, replaced {replacement_count} characters, "
-        f"and wrote {output_path.name}"
+        f"and wrote {written_path.name}"
     )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
