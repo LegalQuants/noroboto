@@ -39,7 +39,6 @@ class NorobotoVariant:
     subfamily_name: str
     postscript_name: str
     base_font_path: Path
-    output_font_path: Path
     embedded_font_part: str
     embedded_font_rel_target: str
     word_family: str
@@ -58,7 +57,6 @@ def _build_variant(
     subfamily_name: str,
     postscript_name: str,
     base_font_filename: str,
-    output_font_filename: str,
     embedded_font_filename: str,
     word_family: str,
     embed_element_name: str,
@@ -69,7 +67,6 @@ def _build_variant(
         subfamily_name=subfamily_name,
         postscript_name=postscript_name,
         base_font_path=Path(base_font_filename),
-        output_font_path=Path(output_font_filename),
         embedded_font_part=f"word/fonts/{embedded_font_filename}",
         embedded_font_rel_target=f"fonts/{embedded_font_filename}",
         word_family=word_family,
@@ -84,7 +81,6 @@ NOROBOTO_VARIANTS = {
         "Regular",
         "NorobotoSerif-Regular",
         "./liberation-serif-regular.ttf",
-        "./noroboto-serif.ttf",
         "noroboto-serif.odttf",
         "roman",
         "embedRegular",
@@ -95,7 +91,6 @@ NOROBOTO_VARIANTS = {
         "Bold",
         "NorobotoSerif-Bold",
         "./liberation-serif-bold.ttf",
-        "./noroboto-serif-bold.ttf",
         "noroboto-serif-bold.odttf",
         "roman",
         "embedBold",
@@ -106,7 +101,6 @@ NOROBOTO_VARIANTS = {
         "Italic",
         "NorobotoSerif-Italic",
         "./liberation-serif-italic.ttf",
-        "./noroboto-serif-italic.ttf",
         "noroboto-serif-italic.odttf",
         "roman",
         "embedItalic",
@@ -117,7 +111,6 @@ NOROBOTO_VARIANTS = {
         "Bold Italic",
         "NorobotoSerif-BoldItalic",
         "./liberation-serif-bold-italic.ttf",
-        "./noroboto-serif-bold-italic.ttf",
         "noroboto-serif-bold-italic.odttf",
         "roman",
         "embedBoldItalic",
@@ -128,7 +121,6 @@ NOROBOTO_VARIANTS = {
         "Regular",
         "NorobotoSans-Regular",
         "./liberation-sans-regular.ttf",
-        "./noroboto-sans.ttf",
         "noroboto-sans.odttf",
         "swiss",
         "embedRegular",
@@ -139,7 +131,6 @@ NOROBOTO_VARIANTS = {
         "Bold",
         "NorobotoSans-Bold",
         "./liberation-sans-bold.ttf",
-        "./noroboto-sans-bold.ttf",
         "noroboto-sans-bold.odttf",
         "swiss",
         "embedBold",
@@ -150,7 +141,6 @@ NOROBOTO_VARIANTS = {
         "Italic",
         "NorobotoSans-Italic",
         "./liberation-sans-italic.ttf",
-        "./noroboto-sans-italic.ttf",
         "noroboto-sans-italic.odttf",
         "swiss",
         "embedItalic",
@@ -161,7 +151,6 @@ NOROBOTO_VARIANTS = {
         "Bold Italic",
         "NorobotoSans-BoldItalic",
         "./liberation-sans-bold-italic.ttf",
-        "./noroboto-sans-bold-italic.ttf",
         "noroboto-sans-bold-italic.odttf",
         "swiss",
         "embedBoldItalic",
@@ -444,10 +433,11 @@ def build_noroboto_font(variant: NorobotoVariant, mapping: dict[int, int]) -> No
                 subtable.cmap[shuffled_codepoint] = glyph_name
 
     _set_font_names(font, variant)
-    font.save(str(variant.output_font_path))
+    font_buffer = BytesIO()
+    font.save(font_buffer)
     font.close()
 
-    font_bytes = variant.output_font_path.read_bytes()
+    font_bytes = font_buffer.getvalue()
     font_key = "{" + str(uuid4()).upper() + "}"
     return NorobotoBuild(
         variant=variant,
@@ -584,15 +574,6 @@ def _update_content_types(content_types_xml: bytes, builds: dict[str, NorobotoBu
     return _serialize_xml(root)
 
 
-def _update_settings(settings_xml: bytes | None) -> bytes | None:
-    if settings_xml is None:
-        return None
-    root = _parse_xml(settings_xml)
-    if root.find("w:embedTrueTypeFonts", XML_NAMESPACES) is None:
-        root.append(etree.Element(_w_namespaced("embedTrueTypeFonts"), nsmap=root.nsmap))
-    return _serialize_xml(root)
-
-
 def replace_text_element_with_pua_text(
     docx_bytes: bytes,
     text_xpath: str,
@@ -630,9 +611,6 @@ def replace_text_element_with_pua_text(
         )
         payloads[DOCX_CONTENT_TYPES_PART] = _update_content_types(payloads[DOCX_CONTENT_TYPES_PART], builds)
 
-        updated_settings = _update_settings(payloads.get(DOCX_SETTINGS_PART))
-        if updated_settings is not None:
-            payloads[DOCX_SETTINGS_PART] = updated_settings
 
         for build in builds.values():
             payloads[build.variant.embedded_font_part] = build.obfuscated_font_bytes
@@ -686,7 +664,7 @@ if __name__ == '__main__':
     )
     output_path = _write_output_docx(updated_docx, Path("./output.docx"))
     print(
-        f"Generated {len(builds)} randomized Noroboto font files; "
+        f"Built {len(builds)} randomized Noroboto embedded fonts in memory; "
         f"used {selected_font_name} for substitution, replaced {replacement_count} characters, "
         f"and wrote {output_path.name}"
     )
