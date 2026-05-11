@@ -288,6 +288,18 @@ def _ensure_content_type_override(root: etree._Element, part_name: str, content_
     root.append(override)
 
 
+def _ensure_content_type_default(root: etree._Element, extension: str, content_type: str) -> None:
+    for default in root.findall(_content_type_namespaced("Default")):
+        if default.get("Extension") == extension:
+            default.set("ContentType", content_type)
+            return
+
+    default = etree.Element(_content_type_namespaced("Default"))
+    default.set("Extension", extension)
+    default.set("ContentType", content_type)
+    root.append(default)
+
+
 def _ensure_run_uses_font(run: etree._Element, font_name: str) -> None:
     run_properties = run.find("w:rPr", XML_NAMESPACES)
     if run_properties is None:
@@ -398,20 +410,30 @@ def _select_build_for_run(run: etree._Element, builds: dict[str, NorobotoBuild])
     return builds[f"{family_key}_{style_key}"]
 
 
-def build_noroboto_font(variant: NorobotoVariant) -> NorobotoBuild:
-    font = TTFont(str(variant.base_font_path))
-    best_cmap = font["cmap"].getBestCmap() or {}
-    eligible_codepoints = _eligible_codepoints(best_cmap)
+def _family_mapping_for_variants(variants: list[NorobotoVariant]) -> dict[int, int]:
+    eligible_sets: list[set[int]] = []
+    for variant in variants:
+        font = TTFont(str(variant.base_font_path))
+        best_cmap = font["cmap"].getBestCmap() or {}
+        eligible_sets.append(set(_eligible_codepoints(best_cmap)))
+        font.close()
+
+    eligible_codepoints = sorted(set.intersection(*eligible_sets)) if eligible_sets else []
     available_pua_codepoints = list(range(PUA_START, PUA_END + 1))
     if len(eligible_codepoints) > len(available_pua_codepoints):
         raise ValueError(
-            f"Base font exposes {len(eligible_codepoints)} BMP Unicode codepoints, "
+            f"Base font family exposes {len(eligible_codepoints)} shared BMP Unicode codepoints, "
             f"but only {len(available_pua_codepoints)} BMP PUA slots are available"
         )
 
     shuffled_pua = available_pua_codepoints[: len(eligible_codepoints)]
     random.shuffle(shuffled_pua)
-    mapping = dict(zip(eligible_codepoints, shuffled_pua))
+    return dict(zip(eligible_codepoints, shuffled_pua))
+
+
+def build_noroboto_font(variant: NorobotoVariant, mapping: dict[int, int]) -> NorobotoBuild:
+    font = TTFont(str(variant.base_font_path))
+    best_cmap = font["cmap"].getBestCmap() or {}
 
     for subtable in font["cmap"].tables:
         if not subtable.isUnicode() or not hasattr(subtable, "cmap"):
@@ -422,6 +444,7 @@ def build_noroboto_font(variant: NorobotoVariant) -> NorobotoBuild:
                 subtable.cmap[shuffled_codepoint] = glyph_name
 
     _set_font_names(font, variant)
+    font.save(str(variant.output_font_path))
     font.close()
 
     font_bytes = variant.output_font_path.read_bytes()
@@ -551,9 +574,17 @@ def _update_font_table_relationships(
 
 def _update_content_types(content_types_xml: bytes, builds: dict[str, NorobotoBuild]) -> bytes:
     root = _parse_xml(content_types_xml)
+
+    for override in list(root.findall(_content_type_namespaced("Override"))):
+        part_name = override.get("PartName") or ""
+        if part_name.endswith(".rels") or part_name.startswith("/word/fonts/"):
+            root.remove(override)
+
+    _ensure_content_type_default(root, "rels", "application/vnd.openxmlformats-package.relationships+xml")
+    _ensure_content_type_default(root, "xml", "application/xml")
+    _ensure_content_type_default(root, "odttf", OBFUSCATED_FONT_CONTENT_TYPE)
+
     _ensure_content_type_override(root, "/word/fontTable.xml", FONT_TABLE_CONTENT_TYPE)
-    for build in builds.values():
-        _ensure_content_type_override(root, f"/{build.variant.embedded_font_part}", OBFUSCATED_FONT_CONTENT_TYPE)
     return _serialize_xml(root)
 
 
@@ -642,7 +673,16 @@ def _write_output_docx(docx_bytes: bytes, output_path: Path) -> Path:
 
 if __name__ == '__main__':
     text_xpath = "w:body/w:p/w:r/w:t"
-    builds = {key: build_noroboto_font(variant) for key, variant in NOROBOTO_VARIANTS.items()}
+    family_mappings = {
+        family_key: _family_mapping_for_variants(
+            [variant for variant in NOROBOTO_VARIANTS.values() if variant.family_key == family_key]
+        )
+        for family_key in {variant.family_key for variant in NOROBOTO_VARIANTS.values()}
+    }
+    builds = {
+        key: build_noroboto_font(variant, family_mappings[variant.family_key])
+        for key, variant in NOROBOTO_VARIANTS.items()
+    }
     updated_docx, replacement_count, selected_font_name = replace_text_element_with_symbols(
         Path("./nda.docx").read_bytes(),
         text_xpath,
