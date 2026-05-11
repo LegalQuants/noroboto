@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import unicodedata
 import zipfile
 from copy import copy
 from dataclasses import dataclass
@@ -338,11 +339,20 @@ def _set_font_names(font: TTFont, variant: NorobotoVariant) -> None:
         name_table.setName(value, name_id, 1, 0, 0)
 
 
+def _should_preserve_codepoint(codepoint: int) -> bool:
+    character = chr(codepoint)
+    if character.isspace():
+        return True
+    return unicodedata.category(character).startswith("P")
+
+
 def _eligible_codepoints(best_cmap: dict[int, str]) -> list[int]:
     return [
         codepoint
         for codepoint in sorted(best_cmap)
-        if 0x20 <= codepoint <= 0xFFFF and not (PUA_START <= codepoint <= PUA_END)
+        if 0x20 <= codepoint <= 0xFFFF
+        and not (PUA_START <= codepoint <= PUA_END)
+        and not _should_preserve_codepoint(codepoint)
     ]
 
 
@@ -480,6 +490,9 @@ def replace_text_with_pua_text(document_xml: bytes, text_xpath: str, builds: dic
         for character in text_value:
             codepoint = ord(character)
             shuffled_codepoint = build.mapping.get(codepoint)
+            if shuffled_codepoint is None and _should_preserve_codepoint(codepoint):
+                remapped_characters.append(character)
+                continue
             if shuffled_codepoint is None:
                 raise ValueError(
                     f"Character {character!r} (U+{codepoint:04X}) is not available in the {build.display_name} mapping"
