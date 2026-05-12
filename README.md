@@ -12,6 +12,14 @@ pip install -r requirements.txt
 python noroboto.py input.docx output.docx
 ```
 
+## Run the test
+
+Drop some documents in `/docs`, then run:
+
+```bash
+python -m unittest tests.test_docs_corpus
+```
+
 ## Run the server
 
 ```bash

@@ -22,6 +22,8 @@ DOCX_DOCUMENT_RELS_PART = "word/_rels/document.xml.rels"
 DOCX_FONT_TABLE_RELS_PART = "word/_rels/fontTable.xml.rels"
 DOCX_CONTENT_TYPES_PART = "[Content_Types].xml"
 DOCX_FONT_TABLE_REL_TARGET = "fontTable.xml"
+DOCX_ENDNOTES_PART = "word/endnotes.xml"
+DOCX_FOOTNOTES_PART = "word/footnotes.xml"
 WORDPROCESSINGML_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 PACKAGE_RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 OFFICE_RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -537,7 +539,7 @@ def _required_codepoints_by_family(document_xml: bytes, text_xpath: str) -> dict
         family_key: set()
         for family_key in {variant.family_key for variant in NOROBOTO_VARIANTS.values()}
     }
-    for run, target in _require_target_text_elements(root, text_xpath):
+    for run, target in _require_target_text_elements(root, text_xpath, require_targets=False):
         family_key = _family_key_for_run(run)
         text_value = target.text or ""
         for character in text_value:
@@ -641,9 +643,48 @@ def build_noroboto_builds(required_codepoints_by_family: dict[str, set[int]]) ->
     }
 
 
-def _require_target_text_elements(root: etree._Element, text_xpath: str) -> list[tuple[etree._Element, etree._Element]]:
+def _target_text_part_names(payloads: dict[str, bytes]) -> list[str]:
+    header_parts = sorted(
+        part_name
+        for part_name in payloads
+        if part_name.startswith("word/header") and part_name.endswith(".xml")
+    )
+    footer_parts = sorted(
+        part_name
+        for part_name in payloads
+        if part_name.startswith("word/footer") and part_name.endswith(".xml")
+    )
+    note_parts = [
+        part_name
+        for part_name in (DOCX_FOOTNOTES_PART, DOCX_ENDNOTES_PART)
+        if part_name in payloads
+    ]
+    return [DOCX_DOCUMENT_PART, *header_parts, *footer_parts, *note_parts]
+
+
+def _merge_required_codepoints_by_family(
+    part_xml_payloads: list[bytes],
+    text_xpath: str,
+) -> dict[str, set[int]]:
+    required_codepoints = {
+        family_key: set()
+        for family_key in {variant.family_key for variant in NOROBOTO_VARIANTS.values()}
+    }
+    for part_xml in part_xml_payloads:
+        part_required_codepoints = _required_codepoints_by_family(part_xml, text_xpath)
+        for family_key, codepoints in part_required_codepoints.items():
+            required_codepoints[family_key].update(codepoints)
+    return required_codepoints
+
+
+def _require_target_text_elements(
+    root: etree._Element,
+    text_xpath: str,
+    *,
+    require_targets: bool = True,
+) -> list[tuple[etree._Element, etree._Element]]:
     targets = root.xpath(text_xpath, namespaces=_xpath_namespaces(root))
-    if not targets:
+    if not targets and require_targets:
         raise ValueError(f"Text element not found for xpath: {text_xpath}")
     resolved_targets: list[tuple[etree._Element, etree._Element]] = []
     for target in targets:
@@ -661,11 +702,17 @@ def _require_target_text_elements(root: etree._Element, text_xpath: str) -> list
     return resolved_targets
 
 
-def replace_text_with_pua_text(document_xml: bytes, text_xpath: str, builds: dict[str, NorobotoBuild]) -> tuple[bytes, int, str]:
+def replace_text_with_pua_text(
+    document_xml: bytes,
+    text_xpath: str,
+    builds: dict[str, NorobotoBuild],
+    *,
+    require_targets: bool = True,
+) -> tuple[bytes, int, str]:
     root = _parse_xml(document_xml)
     replacement_count = 0
     selected_family_names: set[str] = set()
-    for run, target in _require_target_text_elements(root, text_xpath):
+    for run, target in _require_target_text_elements(root, text_xpath, require_targets=require_targets):
         build = _select_build_for_run(run, builds)
         text_value = target.text or ""
         _ensure_run_uses_font(run, build.family_name)
@@ -791,19 +838,33 @@ def replace_text_element_with_pua_text(
     with zipfile.ZipFile(input_buffer, mode="r") as source_archive:
         original_infos = {info.filename: copy(info) for info in source_archive.infolist()}
         payloads = {info.filename: source_archive.read(info.filename) for info in source_archive.infolist()}
+        target_part_names = _target_text_part_names(payloads)
 
         document_xml = payloads.get(DOCX_DOCUMENT_PART)
         if document_xml is None:
             raise KeyError(f"DOCX part not found: {DOCX_DOCUMENT_PART}")
 
         if builds is None:
-            builds = build_noroboto_builds(_required_codepoints_by_family(document_xml, text_xpath))
+            builds = build_noroboto_builds(
+                _merge_required_codepoints_by_family(
+                    [payloads[part_name] for part_name in target_part_names],
+                    text_xpath,
+                )
+            )
 
-        payloads[DOCX_DOCUMENT_PART], replacement_count, selected_family_name = replace_text_with_pua_text(
-            document_xml,
-            text_xpath,
-            builds,
-        )
+        selected_family_names: set[str] = set()
+        for part_name in target_part_names:
+            payloads[part_name], part_replacement_count, part_family_name = replace_text_with_pua_text(
+                payloads[part_name],
+                text_xpath,
+                builds,
+                require_targets=part_name == DOCX_DOCUMENT_PART,
+            )
+            replacement_count += part_replacement_count
+            if part_family_name:
+                selected_family_names.update(part_family_name.split(", "))
+
+        selected_family_name = ", ".join(sorted(selected_family_names))
         document_part_found = True
         payloads[DOCX_DOCUMENT_RELS_PART] = _update_document_relationships(payloads.get(DOCX_DOCUMENT_RELS_PART))
         payloads[DOCX_FONT_TABLE_RELS_PART], font_relationship_ids = _update_font_table_relationships(
@@ -870,7 +931,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     written_path = _write_output_docx(updated_docx, output_path)
     print(
-        f"Built {len(builds)} randomized Noroboto embedded fonts in memory; "
+        f"Built {len(NOROBOTO_VARIANTS)} randomized Noroboto embedded fonts in memory; "
         f"used {selected_font_name} for substitution, replaced {replacement_count} characters, "
         f"and wrote {written_path.name}"
     )
