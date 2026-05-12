@@ -12,8 +12,6 @@ pip install -r requirements.txt
 python noroboto.py input.docx output.docx
 ```
 
-Noroboto keeps the Liberation font variants as the primary glyph source and automatically pulls fallback glyphs from `fonts/noto/` when the input document uses codepoints that Liberation does not cover.
-
 ## Run the server
 
 ```bash
