@@ -13,41 +13,315 @@ INDEX_HTML = """<!doctype html>
 <html lang=\"en\">
 <head>
     <meta charset=\"utf-8\">
-    <title>Noroboto</title>
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+    <title>noroboto</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --page-bg: #040404;
+            --page-glow: rgba(42, 42, 42, 0.4);
+            --panel-bg: rgba(10, 10, 10, 0.95);
+            --panel-border: #232323;
+            --text: #f1f1f1;
+            --button-bg: #161616;
+            --button-border: #3a3a3a;
+            --button-hover: #1f1f1f;
+            --error-bg: rgba(70, 18, 18, 0.42);
+            --error-border: rgba(176, 76, 76, 0.42);
+            --error-text: #e0a1a1;
+            --shadow: 0 24px 72px rgba(0, 0, 0, 0.64);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+            background:
+                radial-gradient(circle at top center, var(--page-glow) 0%, rgba(42, 42, 42, 0) 34%),
+                linear-gradient(180deg, #010101 0%, var(--page-bg) 100%);
+            color: var(--text);
+            font-family: monospace;
+        }
+
+        .shell {
+            width: min(100%, 560px);
+        }
+
+        .panel {
+            padding: 40px 36px;
+            border: 1px solid var(--panel-border);
+            border-radius: 6px;
+            background: var(--panel-bg);
+            box-shadow: var(--shadow);
+            text-align: center;
+            backdrop-filter: blur(6px);
+        }
+
+        h1 {
+            margin: 0 0 28px;
+            font-size: clamp(2rem, 6vw, 2.7rem);
+            line-height: 1.05;
+            letter-spacing: -0.03em;
+            font-weight: 700;
+            text-transform: lowercase;
+        }
+
+        .brand {
+            display: inline-block;
+            color: var(--text);
+            text-shadow: 0 0 14px rgba(255, 255, 255, 0.08);
+        }
+
+        .file-input {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        .button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 240px;
+            min-height: 52px;
+            padding: 12px 18px;
+            border: 1px solid var(--button-border);
+            border-radius: 4px;
+            background: var(--button-bg);
+            color: var(--text);
+            font: inherit;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            text-transform: lowercase;
+            cursor: pointer;
+            transition: border-color 140ms ease, background-color 140ms ease, transform 140ms ease;
+        }
+
+        .button:hover,
+        .button:focus-visible {
+            border-color: #535353;
+            background: var(--button-hover);
+            transform: translateY(-1px);
+        }
+
+        .button[disabled] {
+            cursor: default;
+            transform: none;
+            opacity: 1;
+        }
+
+        .button-label {
+            display: inline-flex;
+        }
+
+        .spinner {
+            display: none;
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255, 255, 255, 0.18);
+            border-top-color: #f1f1f1;
+            border-radius: 999px;
+            animation: spin 0.7s linear infinite;
+        }
+
+        .button.loading .button-label {
+            display: none;
+        }
+
+        .button.loading .spinner {
+            display: inline-block;
+        }
+
+        .error {
+            display: none;
+            margin: 18px 0 0;
+            padding: 12px 14px;
+            border: 1px solid var(--error-border);
+            border-radius: 4px;
+            background: var(--error-bg);
+            color: var(--error-text);
+            text-align: left;
+        }
+
+        .error.visible {
+            display: block;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        @media (max-width: 640px) {
+            .panel {
+                padding: 28px 22px;
+            }
+
+            .button {
+                width: 100%;
+            }
+        }
+    </style>
 </head>
 <body>
-    <h1>Noroboto</h1>
-    <p>Upload a .docx file to apply Noroboto and download the result.</p>
-    {% if error %}
-    <p>{{ error }}</p>
-    {% endif %}
-    <form id=\"upload-form\" action=\"{{ url_for('convert_docx') }}\" method=\"post\" enctype=\"multipart/form-data\">
-        <p>
-            <label for=\"docx\">Choose a .docx file:</label>
-            <input id=\"docx\" name=\"docx\" type=\"file\" accept=\".docx\" required>
-        </p>
-    </form>
+    <main class=\"shell\">
+        <section class=\"panel\">
+            <h1><span id=\"brand\" class=\"brand\">noroboto</span></h1>
+            <form id=\"upload-form\" action=\"{{ url_for('convert_docx') }}\" method=\"post\" enctype=\"multipart/form-data\">
+                <input class=\"file-input\" id=\"docx\" name=\"docx\" type=\"file\" accept=\".docx\" required>
+                <button id=\"obfuscate-button\" class=\"button\" type=\"button\">
+                    <span class=\"button-label\">obfuscate document</span>
+                    <span class=\"spinner\" aria-hidden=\"true\"></span>
+                </button>
+            </form>
+            <p id=\"error\" class=\"error{% if error %} visible{% endif %}\">{% if error %}{{ error }}{% endif %}</p>
+        </section>
+    </main>
     <script>
         const uploadForm = document.getElementById('upload-form');
         const fileInput = document.getElementById('docx');
+        const obfuscateButton = document.getElementById('obfuscate-button');
+        const errorElement = document.getElementById('error');
+        const brand = document.getElementById('brand');
+        const brandText = 'noroboto';
+        const tofuGlyph = '\\uE000';
+        const tofuText = tofuGlyph.repeat(Array.from(brandText).length);
+        let isLoading = false;
 
-        function setFile(file) {
-            const dataTransfer = new DataTransfer();
-            dataTransfer.items.add(file);
-            fileInput.files = dataTransfer.files;
+        function showError(message) {
+            if (!errorElement) {
+                return;
+            }
+
+            errorElement.textContent = message;
+            errorElement.classList.add('visible');
         }
 
-        function submitIfDocx(file) {
-            if (file && file.name.toLowerCase().endsWith('.docx')) {
-                setFile(file);
-                uploadForm.requestSubmit();
+        function clearError() {
+            if (!errorElement) {
+                return;
+            }
+
+            errorElement.textContent = '';
+            errorElement.classList.remove('visible');
+        }
+
+        function setLoading(nextLoading) {
+            isLoading = nextLoading;
+            if (!obfuscateButton) {
+                return;
+            }
+
+            obfuscateButton.disabled = nextLoading;
+            obfuscateButton.classList.toggle('loading', nextLoading);
+        }
+
+        function extractFilename(response) {
+            const disposition = response.headers.get('Content-Disposition') || '';
+            const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+            if (utf8Match) {
+                return decodeURIComponent(utf8Match[1]);
+            }
+
+            const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
+            if (asciiMatch) {
+                return asciiMatch[1];
+            }
+
+            return 'noroboto.docx';
+        }
+
+        function triggerDownload(blob, filename) {
+            const objectUrl = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = objectUrl;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+        }
+
+        async function uploadSelectedFile(file) {
+            if (!file || isLoading) {
+                return;
+            }
+
+            if (!file.name.toLowerCase().endsWith('.docx')) {
+                showError('Only .docx files are supported.');
+                fileInput.value = '';
+                return;
+            }
+
+            clearError();
+            setLoading(true);
+
+            try {
+                const formData = new FormData();
+                formData.append('docx', file);
+
+                const response = await fetch(uploadForm.action, {
+                    method: 'POST',
+                    body: formData,
+                    headers: { 'X-Requested-With': 'fetch' },
+                });
+
+                if (!response.ok) {
+                    const message = (await response.text()).trim() || 'Could not process file.';
+                    throw new Error(message);
+                }
+
+                const blob = await response.blob();
+                triggerDownload(blob, extractFilename(response));
+            } catch (error) {
+                showError(error instanceof Error ? error.message : 'Could not process file.');
+            } finally {
+                setLoading(false);
+                fileInput.value = '';
             }
         }
 
+        function renderBrand(text) {
+            if (!brand) {
+                return;
+            }
+
+            brand.textContent = text;
+        }
+
+        if (brand) {
+            brand.addEventListener('mouseenter', () => {
+                renderBrand(tofuText);
+            });
+
+            brand.addEventListener('mouseleave', () => {
+                renderBrand(brandText);
+            });
+        }
+
+        obfuscateButton.addEventListener('click', () => {
+            if (!isLoading) {
+                fileInput.click();
+            }
+        });
+
         fileInput.addEventListener('change', () => {
             const [file] = fileInput.files;
-            submitIfDocx(file);
+            uploadSelectedFile(file);
         });
+
+        renderBrand(brandText);
     </script>
 </body>
 </html>
@@ -68,6 +342,16 @@ def _render_index(error: str | None = None, status_code: int = 200) -> Response:
     return Response(render_template_string(INDEX_HTML, error=error), status=status_code)
 
 
+def _is_async_request() -> bool:
+    return request.headers.get("X-Requested-With") == "fetch"
+
+
+def _render_error(message: str, status_code: int = 400) -> Response:
+    if _is_async_request():
+        return Response(message, status=status_code, mimetype="text/plain")
+    return _render_index(message, status_code)
+
+
 @app.get("/")
 def index() -> Response:
     return _render_index()
@@ -77,10 +361,10 @@ def index() -> Response:
 def convert_docx() -> Response:
     uploaded_file = request.files.get("docx")
     if uploaded_file is None or uploaded_file.filename is None or uploaded_file.filename == "":
-        return _render_index("Choose a .docx file to upload.", 400)
+        return _render_error("Choose a .docx file to upload.", 400)
 
     if not uploaded_file.filename.lower().endswith(".docx"):
-        return _render_index("Only .docx files are supported.", 400)
+        return _render_error("Only .docx files are supported.", 400)
 
     try:
         updated_docx, _, _ = replace_text_element_with_pua_text(
@@ -88,7 +372,7 @@ def convert_docx() -> Response:
             DEFAULT_TEXT_XPATH,
         )
     except (KeyError, ValueError, zipfile.BadZipFile) as exc:
-        return _render_index(f"Could not process file: {exc}", 400)
+        return _render_error(f"Could not process file: {exc}", 400)
 
     return send_file(
         BytesIO(updated_docx),
