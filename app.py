@@ -7,7 +7,7 @@ from pathlib import Path
 
 from flask import Flask, Response, render_template_string, request, send_file
 
-from noroboto import DEFAULT_TEXT_XPATH, build_noroboto_builds, replace_text_element_with_pua_text
+from noroboto import DEFAULT_TEXT_XPATH, replace_text_element_with_pua_text
 
 INDEX_HTML = """<!doctype html>
 <html lang=\"en\">
@@ -86,7 +86,6 @@ def convert_docx() -> Response:
         updated_docx, _, _ = replace_text_element_with_pua_text(
             uploaded_file.read(),
             DEFAULT_TEXT_XPATH,
-            build_noroboto_builds(),
         )
     except (KeyError, ValueError, zipfile.BadZipFile) as exc:
         return _render_index(f"Could not process file: {exc}", 400)

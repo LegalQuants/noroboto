@@ -1,3 +1,3 @@
-add Noto fonts for non-Latin character sets
 better website
 testing
+add non-document part coverage (e.g., footnotes, header/footer, etc.)

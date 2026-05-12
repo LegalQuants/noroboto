@@ -11,6 +11,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from fontTools.ttLib import TTFont
+from fontTools.pens.transformPen import TransformPen
+from fontTools.pens.ttGlyphPen import TTGlyphPen
 from lxml import etree
 
 DOCX_DOCUMENT_PART = "word/document.xml"
@@ -33,6 +35,35 @@ PUA_END = 0xF8FF
 XML_NAMESPACES = {"w": WORDPROCESSINGML_NS, "r": OFFICE_RELATIONSHIPS_NS}
 XML_PARSER = etree.XMLParser(remove_blank_text=False, resolve_entities=False)
 DEFAULT_TEXT_XPATH = ".//w:t"
+NOTO_FONTS_DIR = Path("fonts").joinpath("noto")
+COMMON_NOTO_FALLBACK_FILENAMES = (
+    "noto/NotoSansSC-Regular.ttf",
+    "noto/NotoSansSymbols-Regular.ttf",
+    "noto/NotoSansSymbols2-Regular.ttf",
+)
+STYLE_NOTO_FALLBACK_FILENAMES = {
+    "regular": ("noto/NotoSans-Regular.ttf",),
+    "bold": ("noto/NotoSans-Bold.ttf", "noto/NotoSans-Regular.ttf"),
+    "italic": ("noto/NotoSans-Italic.ttf", "noto/NotoSans-Regular.ttf"),
+    "bold_italic": ("noto/NotoSans-BoldItalic.ttf", "noto/NotoSans-Regular.ttf"),
+}
+
+
+def _discover_noto_fallback_paths(style_key: str) -> tuple[Path, ...]:
+    preferred_paths = [
+        Path("fonts").joinpath(font_filename)
+        for font_filename in (*STYLE_NOTO_FALLBACK_FILENAMES[style_key], *COMMON_NOTO_FALLBACK_FILENAMES)
+    ]
+    discovered_paths = sorted(path for path in NOTO_FONTS_DIR.rglob("*.ttf") if path.is_file())
+
+    fallback_paths: list[Path] = []
+    seen_paths: set[Path] = set()
+    for path in (*preferred_paths, *discovered_paths):
+        if not path.exists() or path in seen_paths:
+            continue
+        fallback_paths.append(path)
+        seen_paths.add(path)
+    return tuple(fallback_paths)
 
 
 @dataclass(frozen=True)
@@ -42,6 +73,7 @@ class NorobotoVariant:
     subfamily_name: str
     postscript_name: str
     base_font_path: Path
+    fallback_font_paths: tuple[Path, ...]
     embedded_font_part: str
     embedded_font_rel_target: str
     word_family: str
@@ -56,6 +88,7 @@ class NorobotoVariant:
 
 def _build_variant(
     family_key: str,
+    style_key: str,
     family_name: str,
     subfamily_name: str,
     postscript_name: str,
@@ -70,6 +103,7 @@ def _build_variant(
         subfamily_name=subfamily_name,
         postscript_name=postscript_name,
         base_font_path=Path("fonts").joinpath(base_font_filename),
+        fallback_font_paths=_discover_noto_fallback_paths(style_key),
         embedded_font_part=f"word/fonts/{embedded_font_filename}",
         embedded_font_rel_target=f"fonts/{embedded_font_filename}",
         word_family=word_family,
@@ -80,6 +114,7 @@ def _build_variant(
 NOROBOTO_VARIANTS = {
     "serif_regular": _build_variant(
         "serif",
+        "regular",
         "Noroboto Serif",
         "Regular",
         "NorobotoSerif-Regular",
@@ -90,6 +125,7 @@ NOROBOTO_VARIANTS = {
     ),
     "serif_bold": _build_variant(
         "serif",
+        "bold",
         "Noroboto Serif",
         "Bold",
         "NorobotoSerif-Bold",
@@ -100,6 +136,7 @@ NOROBOTO_VARIANTS = {
     ),
     "serif_italic": _build_variant(
         "serif",
+        "italic",
         "Noroboto Serif",
         "Italic",
         "NorobotoSerif-Italic",
@@ -110,6 +147,7 @@ NOROBOTO_VARIANTS = {
     ),
     "serif_bold_italic": _build_variant(
         "serif",
+        "bold_italic",
         "Noroboto Serif",
         "Bold Italic",
         "NorobotoSerif-BoldItalic",
@@ -120,6 +158,7 @@ NOROBOTO_VARIANTS = {
     ),
     "sans_regular": _build_variant(
         "sans",
+        "regular",
         "Noroboto Sans",
         "Regular",
         "NorobotoSans-Regular",
@@ -130,6 +169,7 @@ NOROBOTO_VARIANTS = {
     ),
     "sans_bold": _build_variant(
         "sans",
+        "bold",
         "Noroboto Sans",
         "Bold",
         "NorobotoSans-Bold",
@@ -140,6 +180,7 @@ NOROBOTO_VARIANTS = {
     ),
     "sans_italic": _build_variant(
         "sans",
+        "italic",
         "Noroboto Sans",
         "Italic",
         "NorobotoSans-Italic",
@@ -150,6 +191,7 @@ NOROBOTO_VARIANTS = {
     ),
     "sans_bold_italic": _build_variant(
         "sans",
+        "bold_italic",
         "Noroboto Sans",
         "Bold Italic",
         "NorobotoSans-BoldItalic",
@@ -358,6 +400,80 @@ def _eligible_codepoints(best_cmap: dict[int, str]) -> list[int]:
     ]
 
 
+def _unique_fallback_glyph_name(font: TTFont, codepoint: int) -> str:
+    base_name = f"uni{codepoint:04X}.fallback"
+    candidate = base_name
+    suffix = 1
+    existing_glyph_names = set(font.getGlyphOrder())
+    while candidate in existing_glyph_names:
+        candidate = f"{base_name}.{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _copy_fallback_glyphs(font: TTFont, variant: NorobotoVariant, required_codepoints: set[int]) -> dict[int, str]:
+    if not required_codepoints:
+        return font["cmap"].getBestCmap() or {}
+
+    if "glyf" not in font or "hmtx" not in font:
+        raise ValueError(f"Base font does not support fallback glyph injection: {variant.base_font_path.name}")
+
+    best_cmap = dict(font["cmap"].getBestCmap() or {})
+    missing_codepoints = {codepoint for codepoint in required_codepoints if codepoint not in best_cmap}
+    if not missing_codepoints:
+        return best_cmap
+
+    glyph_order = list(font.getGlyphOrder())
+    glyph_order_changed = False
+    base_units_per_em = font["head"].unitsPerEm
+    base_glyph_set = font.getGlyphSet()
+    unicode_cmap_tables = [
+        subtable
+        for subtable in font["cmap"].tables
+        if subtable.isUnicode() and hasattr(subtable, "cmap")
+    ]
+
+    for fallback_font_path in variant.fallback_font_paths:
+        if not missing_codepoints:
+            break
+
+        fallback_font = TTFont(str(fallback_font_path))
+        try:
+            if "glyf" not in fallback_font or "hmtx" not in fallback_font:
+                continue
+
+            fallback_cmap = fallback_font["cmap"].getBestCmap() or {}
+            fallback_glyph_set = fallback_font.getGlyphSet()
+            scale = base_units_per_em / fallback_font["head"].unitsPerEm
+            resolved_codepoints = sorted(codepoint for codepoint in missing_codepoints if codepoint in fallback_cmap)
+            for codepoint in resolved_codepoints:
+                source_glyph_name = fallback_cmap[codepoint]
+                new_glyph_name = _unique_fallback_glyph_name(font, codepoint)
+                pen = TTGlyphPen(base_glyph_set)
+                transform_pen = TransformPen(pen, (scale, 0, 0, scale, 0, 0))
+                fallback_glyph_set[source_glyph_name].draw(transform_pen)
+                font["glyf"].glyphs[new_glyph_name] = pen.glyph()
+                glyph_order.append(new_glyph_name)
+                advance_width, left_side_bearing = fallback_font["hmtx"].metrics[source_glyph_name]
+                font["hmtx"].metrics[new_glyph_name] = (
+                    round(advance_width * scale),
+                    round(left_side_bearing * scale),
+                )
+                for subtable in unicode_cmap_tables:
+                    subtable.cmap[codepoint] = new_glyph_name
+                best_cmap[codepoint] = new_glyph_name
+                missing_codepoints.remove(codepoint)
+                glyph_order_changed = True
+        finally:
+            fallback_font.close()
+
+    if glyph_order_changed:
+        font.setGlyphOrder(glyph_order)
+        font["glyf"].glyphOrder = glyph_order
+
+    return best_cmap
+
+
 def _run_font_names(run: etree._Element) -> list[str]:
     run_properties = run.find("w:rPr", XML_NAMESPACES)
     if run_properties is None:
@@ -404,26 +520,77 @@ def _style_key_for_run(run: etree._Element) -> str:
     return "regular"
 
 
-def _select_build_for_run(run: etree._Element, builds: dict[str, NorobotoBuild]) -> NorobotoBuild:
+def _family_key_for_run(run: etree._Element) -> str:
     run_font_names = set(_run_font_names(run))
-    family_key = "sans" if run_font_names & ARIAL_FONT_NAMES else "serif"
+    return "sans" if run_font_names & ARIAL_FONT_NAMES else "serif"
+
+
+def _select_build_for_run(run: etree._Element, builds: dict[str, NorobotoBuild]) -> NorobotoBuild:
+    family_key = _family_key_for_run(run)
     style_key = _style_key_for_run(run)
     return builds[f"{family_key}_{style_key}"]
 
 
-def _family_mapping_for_variants(variants: list[NorobotoVariant]) -> dict[int, int]:
-    eligible_sets: list[set[int]] = []
-    for variant in variants:
-        font = TTFont(str(variant.base_font_path))
-        best_cmap = font["cmap"].getBestCmap() or {}
-        eligible_sets.append(set(_eligible_codepoints(best_cmap)))
-        font.close()
+def _required_codepoints_by_family(document_xml: bytes, text_xpath: str) -> dict[str, set[int]]:
+    root = _parse_xml(document_xml)
+    required_codepoints = {
+        family_key: set()
+        for family_key in {variant.family_key for variant in NOROBOTO_VARIANTS.values()}
+    }
+    for run, target in _require_target_text_elements(root, text_xpath):
+        family_key = _family_key_for_run(run)
+        text_value = target.text or ""
+        for character in text_value:
+            codepoint = ord(character)
+            if _should_preserve_codepoint(codepoint):
+                continue
+            required_codepoints[family_key].add(codepoint)
+    return required_codepoints
 
+
+def _supported_codepoints_for_variant(variant: NorobotoVariant, required_codepoints: set[int]) -> set[int]:
+    supported_codepoints: set[int] = set()
+    for font_path in (variant.base_font_path, *variant.fallback_font_paths):
+        font = TTFont(str(font_path))
+        try:
+            best_cmap = font["cmap"].getBestCmap() or {}
+            supported_codepoints.update(codepoint for codepoint in required_codepoints if codepoint in best_cmap)
+        finally:
+            font.close()
+        if supported_codepoints == required_codepoints:
+            break
+    return supported_codepoints
+
+
+def _family_mapping_for_variants(
+    variants: list[NorobotoVariant],
+    required_codepoints: set[int],
+) -> dict[int, int]:
+    unsupported_codepoints = sorted(
+        codepoint
+        for codepoint in required_codepoints
+        if not (0x20 <= codepoint <= 0xFFFF) or PUA_START <= codepoint <= PUA_END
+    )
+    if unsupported_codepoints:
+        codepoint = unsupported_codepoints[0]
+        raise ValueError(f"Character {chr(codepoint)!r} (U+{codepoint:04X}) is outside the supported BMP range")
+
+    if not required_codepoints:
+        return {}
+
+    eligible_sets = [_supported_codepoints_for_variant(variant, required_codepoints) for variant in variants]
     eligible_codepoints = sorted(set.intersection(*eligible_sets)) if eligible_sets else []
+    missing_codepoints = sorted(required_codepoints.difference(eligible_codepoints))
+    if missing_codepoints:
+        codepoint = missing_codepoints[0]
+        raise ValueError(
+            f"Character {chr(codepoint)!r} (U+{codepoint:04X}) is not available in the fallback stack for {variants[0].family_name}"
+        )
+
     available_pua_codepoints = list(range(PUA_START, PUA_END + 1))
     if len(eligible_codepoints) > len(available_pua_codepoints):
         raise ValueError(
-            f"Base font family exposes {len(eligible_codepoints)} shared BMP Unicode codepoints, "
+            f"Document requires {len(eligible_codepoints)} randomized BMP Unicode codepoints, "
             f"but only {len(available_pua_codepoints)} BMP PUA slots are available"
         )
 
@@ -434,7 +601,7 @@ def _family_mapping_for_variants(variants: list[NorobotoVariant]) -> dict[int, i
 
 def build_noroboto_font(variant: NorobotoVariant, mapping: dict[int, int]) -> NorobotoBuild:
     font = TTFont(str(variant.base_font_path))
-    best_cmap = font["cmap"].getBestCmap() or {}
+    best_cmap = _copy_fallback_glyphs(font, variant, set(mapping))
 
     for subtable in font["cmap"].tables:
         if not subtable.isUnicode() or not hasattr(subtable, "cmap"):
@@ -460,10 +627,11 @@ def build_noroboto_font(variant: NorobotoVariant, mapping: dict[int, int]) -> No
     )
 
 
-def build_noroboto_builds() -> dict[str, NorobotoBuild]:
+def build_noroboto_builds(required_codepoints_by_family: dict[str, set[int]]) -> dict[str, NorobotoBuild]:
     family_mappings = {
         family_key: _family_mapping_for_variants(
-            [variant for variant in NOROBOTO_VARIANTS.values() if variant.family_key == family_key]
+            [variant for variant in NOROBOTO_VARIANTS.values() if variant.family_key == family_key],
+            required_codepoints_by_family.get(family_key, set()),
         )
         for family_key in {variant.family_key for variant in NOROBOTO_VARIANTS.values()}
     }
@@ -612,7 +780,7 @@ def _update_content_types(content_types_xml: bytes, builds: dict[str, NorobotoBu
 def replace_text_element_with_pua_text(
     docx_bytes: bytes,
     text_xpath: str,
-    builds: dict[str, NorobotoBuild],
+    builds: dict[str, NorobotoBuild] | None = None,
 ) -> tuple[bytes, int, str]:
     input_buffer = BytesIO(docx_bytes)
     output_buffer = BytesIO()
@@ -627,6 +795,9 @@ def replace_text_element_with_pua_text(
         document_xml = payloads.get(DOCX_DOCUMENT_PART)
         if document_xml is None:
             raise KeyError(f"DOCX part not found: {DOCX_DOCUMENT_PART}")
+
+        if builds is None:
+            builds = build_noroboto_builds(_required_codepoints_by_family(document_xml, text_xpath))
 
         payloads[DOCX_DOCUMENT_PART], replacement_count, selected_family_name = replace_text_with_pua_text(
             document_xml,
@@ -693,11 +864,9 @@ def main(argv: list[str] | None = None) -> int:
 
     input_path = Path(args.input_path)
     output_path = Path(args.output_path)
-    builds = build_noroboto_builds()
     updated_docx, replacement_count, selected_font_name = replace_text_element_with_pua_text(
         input_path.read_bytes(),
         DEFAULT_TEXT_XPATH,
-        builds,
     )
     written_path = _write_output_docx(updated_docx, output_path)
     print(
