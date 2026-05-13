@@ -395,9 +395,9 @@ def index() -> Response:
     return _render_index()
 
 
-@app.get("/lq-logo.webp")
+@app.get("/lq-logo.png")
 def logo_asset() -> Response:
-    return Response(LOGO_PATH.read_bytes(), mimetype="image/webp")
+    return Response(LOGO_PATH.read_bytes(), mimetype="image/png")
 
 
 @app.post("/convert")
