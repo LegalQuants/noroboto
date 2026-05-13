@@ -29,6 +29,7 @@ INDEX_HTML = """<!doctype html>
             --error-bg: rgba(70, 18, 18, 0.42);
             --error-border: rgba(176, 76, 76, 0.42);
             --error-text: #e0a1a1;
+            --logo-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
             --shadow: 0 24px 72px rgba(0, 0, 0, 0.64);
         }
 
@@ -51,6 +52,30 @@ INDEX_HTML = """<!doctype html>
 
         .shell {
             width: min(100%, 560px);
+        }
+
+        .corner-logo-link {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            display: block;
+            line-height: 0;
+            border-radius: 4px;
+        }
+
+        .corner-logo-link:focus-visible {
+            outline: 1px solid #6c6c6c;
+            outline-offset: 4px;
+        }
+
+        .corner-logo {
+            width: clamp(40px, 6vw, 56px);
+            height: auto;
+            border-radius: 4px;
+            box-shadow: var(--logo-shadow);
+            opacity: 0.92;
+            display: block;
+            user-select: none;
         }
 
         .panel {
@@ -171,6 +196,15 @@ INDEX_HTML = """<!doctype html>
             .button {
                 width: 100%;
             }
+
+            .corner-logo-link {
+                right: 16px;
+                bottom: 16px;
+            }
+
+            .corner-logo {
+                width: 42px;
+            }
         }
     </style>
 </head>
@@ -188,6 +222,9 @@ INDEX_HTML = """<!doctype html>
             <p id=\"error\" class=\"error{% if error %} visible{% endif %}\">{% if error %}{{ error }}{% endif %}</p>
         </section>
     </main>
+    <a class="corner-logo-link" href="https://www.legalquants.com" target="_blank" rel="noopener noreferrer" aria-label="Visit LegalQuants">
+        <img class="corner-logo" src="{{ url_for('logo_asset') }}" alt="LQ logo">
+    </a>
     <script>
         const uploadForm = document.getElementById('upload-form');
         const fileInput = document.getElementById('docx');
@@ -229,7 +266,7 @@ INDEX_HTML = """<!doctype html>
 
         function extractFilename(response) {
             const disposition = response.headers.get('Content-Disposition') || '';
-            const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+            const utf8Match = disposition.match(/filename\\*=UTF-8''([^;]+)/i);
             if (utf8Match) {
                 return decodeURIComponent(utf8Match[1]);
             }
@@ -328,6 +365,7 @@ INDEX_HTML = """<!doctype html>
 """
 
 app = Flask(__name__)
+LOGO_PATH = Path(__file__).with_name("lq-logo.webp")
 
 
 def _download_name_for_upload(filename: str | None) -> str:
@@ -355,6 +393,11 @@ def _render_error(message: str, status_code: int = 400) -> Response:
 @app.get("/")
 def index() -> Response:
     return _render_index()
+
+
+@app.get("/lq-logo.webp")
+def logo_asset() -> Response:
+    return Response(LOGO_PATH.read_bytes(), mimetype="image/webp")
 
 
 @app.post("/convert")
