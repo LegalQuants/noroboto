@@ -29,8 +29,6 @@ INDEX_HTML = """<!doctype html>
             --error-bg: rgba(70, 18, 18, 0.42);
             --error-border: rgba(176, 76, 76, 0.42);
             --error-text: #e0a1a1;
-            --logo-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
-            --shadow: 0 24px 72px rgba(0, 0, 0, 0.64);
         }
 
         * {
@@ -43,9 +41,6 @@ INDEX_HTML = """<!doctype html>
             display: grid;
             place-items: center;
             padding: 24px;
-            background:
-                radial-gradient(circle at top center, var(--page-glow) 0%, rgba(42, 42, 42, 0) 34%),
-                linear-gradient(180deg, #010101 0%, var(--page-bg) 100%);
             color: var(--text);
             font-family: monospace;
         }
@@ -60,7 +55,6 @@ INDEX_HTML = """<!doctype html>
             bottom: 24px;
             display: block;
             line-height: 0;
-            border-radius: 4px;
         }
 
         .corner-logo-link:focus-visible {
@@ -71,8 +65,6 @@ INDEX_HTML = """<!doctype html>
         .corner-logo {
             width: clamp(40px, 6vw, 56px);
             height: auto;
-            border-radius: 4px;
-            box-shadow: var(--logo-shadow);
             opacity: 0.92;
             display: block;
             user-select: none;
@@ -81,9 +73,7 @@ INDEX_HTML = """<!doctype html>
         .panel {
             padding: 40px 36px;
             border: 1px solid var(--panel-border);
-            border-radius: 6px;
             background: var(--panel-bg);
-            box-shadow: var(--shadow);
             text-align: center;
             backdrop-filter: blur(6px);
         }
@@ -100,7 +90,6 @@ INDEX_HTML = """<!doctype html>
         .brand {
             display: inline-block;
             color: var(--text);
-            text-shadow: 0 0 14px rgba(255, 255, 255, 0.08);
         }
 
         .file-input {
@@ -123,7 +112,6 @@ INDEX_HTML = """<!doctype html>
             min-height: 52px;
             padding: 12px 18px;
             border: 1px solid var(--button-border);
-            border-radius: 4px;
             background: var(--button-bg);
             color: var(--text);
             font: inherit;
@@ -157,7 +145,6 @@ INDEX_HTML = """<!doctype html>
             height: 18px;
             border: 2px solid rgba(255, 255, 255, 0.18);
             border-top-color: #f1f1f1;
-            border-radius: 999px;
             animation: spin 0.7s linear infinite;
         }
 
@@ -174,7 +161,6 @@ INDEX_HTML = """<!doctype html>
             margin: 18px 0 0;
             padding: 12px 14px;
             border: 1px solid var(--error-border);
-            border-radius: 4px;
             background: var(--error-bg);
             color: var(--error-text);
             text-align: left;
