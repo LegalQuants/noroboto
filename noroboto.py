@@ -11,6 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fontTools.ttLib import TTFont
+from fontTools.pens.recordingPen import DecomposingRecordingPen
 from fontTools.pens.transformPen import TransformPen
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 from lxml import etree
@@ -206,6 +207,7 @@ NOROBOTO_VARIANTS = {
 
 ARIAL_FONT_NAMES = {"Arial"}
 WORD_FALSE_VALUES = {"0", "false", "off"}
+GLYPH_PERTURB_MAX_SHIFT = 1
 
 
 @dataclass(frozen=True)
@@ -402,8 +404,7 @@ def _eligible_codepoints(best_cmap: dict[int, str]) -> list[int]:
     ]
 
 
-def _unique_fallback_glyph_name(font: TTFont, codepoint: int) -> str:
-    base_name = f"uni{codepoint:04X}.fallback"
+def _unique_generated_glyph_name(font: TTFont, base_name: str) -> str:
     candidate = base_name
     suffix = 1
     existing_glyph_names = set(font.getGlyphOrder())
@@ -411,6 +412,69 @@ def _unique_fallback_glyph_name(font: TTFont, codepoint: int) -> str:
         candidate = f"{base_name}.{suffix}"
         suffix += 1
     return candidate
+
+
+def _unique_fallback_glyph_name(font: TTFont, codepoint: int) -> str:
+    return _unique_generated_glyph_name(font, f"uni{codepoint:04X}.fallback")
+
+
+def _unique_pua_clone_glyph_name(font: TTFont, source_codepoint: int, shuffled_codepoint: int) -> str:
+    return _unique_generated_glyph_name(font, f"uni{source_codepoint:04X}.pua{shuffled_codepoint:04X}")
+
+
+class _PerturbingPen:
+    def __init__(self, out_pen: TTGlyphPen):
+        self._out_pen = out_pen
+        self._has_perturbed = False
+
+    def _perturb_point(self, point: tuple[float, float]) -> tuple[float, float]:
+        if self._has_perturbed:
+            return point
+
+        dx = random.choice((-GLYPH_PERTURB_MAX_SHIFT, GLYPH_PERTURB_MAX_SHIFT))
+        dy = random.choice((-GLYPH_PERTURB_MAX_SHIFT, GLYPH_PERTURB_MAX_SHIFT))
+        self._has_perturbed = True
+        return (point[0] + dx, point[1] + dy)
+
+    def moveTo(self, point: tuple[float, float]) -> None:
+        self._out_pen.moveTo(point)
+
+    def lineTo(self, point: tuple[float, float]) -> None:
+        self._out_pen.lineTo(self._perturb_point(point))
+
+    def qCurveTo(self, *points: tuple[float, float] | None) -> None:
+        perturbed_points = list(points)
+        for index, point in enumerate(perturbed_points):
+            if point is None:
+                continue
+            perturbed_points[index] = self._perturb_point(point)
+            break
+        self._out_pen.qCurveTo(*perturbed_points)
+
+    def curveTo(self, *points: tuple[float, float]) -> None:
+        perturbed_points = list(points)
+        for index, point in enumerate(perturbed_points):
+            perturbed_points[index] = self._perturb_point(point)
+            break
+        self._out_pen.curveTo(*perturbed_points)
+
+    def closePath(self) -> None:
+        self._out_pen.closePath()
+
+    def endPath(self) -> None:
+        self._out_pen.endPath()
+
+    def addComponent(self, glyph_name: str, transformation: tuple[float, float, float, float, float, float]) -> None:
+        self._out_pen.addComponent(glyph_name, transformation)
+
+
+def _clone_glyph_with_perturbation(font: TTFont, glyph_set, source_glyph_name: str, cloned_glyph_name: str) -> None:
+    recording_pen = DecomposingRecordingPen(glyph_set)
+    glyph_set[source_glyph_name].draw(recording_pen)
+
+    pen = TTGlyphPen(glyph_set)
+    recording_pen.replay(_PerturbingPen(pen))
+    font["glyf"].glyphs[cloned_glyph_name] = pen.glyph()
 
 
 def _copy_fallback_glyphs(font: TTFont, variant: NorobotoVariant, required_codepoints: set[int]) -> dict[int, str]:
@@ -604,14 +668,35 @@ def _family_mapping_for_variants(
 def build_noroboto_font(variant: NorobotoVariant, mapping: dict[int, int]) -> NorobotoBuild:
     font = TTFont(str(variant.base_font_path))
     best_cmap = _copy_fallback_glyphs(font, variant, set(mapping))
+    base_glyph_set = font.getGlyphSet()
+    glyph_order = list(font.getGlyphOrder())
+    shuffled_glyph_names = {
+        source_codepoint: _unique_pua_clone_glyph_name(font, source_codepoint, shuffled_codepoint)
+        for source_codepoint, shuffled_codepoint in mapping.items()
+        if source_codepoint in best_cmap
+    }
+
+    for source_codepoint, shuffled_glyph_name in shuffled_glyph_names.items():
+        source_glyph_name = best_cmap[source_codepoint]
+        _clone_glyph_with_perturbation(font, base_glyph_set, source_glyph_name, shuffled_glyph_name)
+        font["hmtx"].metrics[shuffled_glyph_name] = font["hmtx"].metrics[source_glyph_name]
+        glyph_order.append(shuffled_glyph_name)
+
+    if shuffled_glyph_names:
+        font.setGlyphOrder(glyph_order)
+        font["glyf"].glyphOrder = glyph_order
 
     for subtable in font["cmap"].tables:
         if not subtable.isUnicode() or not hasattr(subtable, "cmap"):
             continue
         for source_codepoint, shuffled_codepoint in mapping.items():
-            glyph_name = best_cmap.get(source_codepoint)
-            if glyph_name is not None:
-                subtable.cmap[shuffled_codepoint] = glyph_name
+            glyph_name = shuffled_glyph_names.get(source_codepoint)
+            if glyph_name is None:
+                continue
+            subtable.cmap[shuffled_codepoint] = glyph_name
+
+    if "post" in font:
+        font["post"].formatType = 3.0
 
     _set_font_names(font, variant)
     font_buffer = BytesIO()
