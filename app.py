@@ -365,7 +365,7 @@ INDEX_HTML = """<!doctype html>
 """
 
 app = Flask(__name__)
-LOGO_PATH = Path(__file__).with_name("lq-logo.webp")
+LOGO_PATH = Path(__file__).with_name("lq-logo.png")
 
 
 def _download_name_for_upload(filename: str | None) -> str:
