@@ -50,6 +50,12 @@ STYLE_NOTO_FALLBACK_FILENAMES = {
     "italic": ("noto/NotoSans-Italic.ttf", "noto/NotoSans-Regular.ttf"),
     "bold_italic": ("noto/NotoSans-BoldItalic.ttf", "noto/NotoSans-Regular.ttf"),
 }
+DISCLOSURE_PARAGRAPH_TEXT = (
+    "This document contains mitigations against review by automated systems. "
+    "Recipients should ensure that they have read the contents on screen or in print. "
+    "Recipients with bona fide vision impairments may be entitled to unmitigated documents upon request."
+)
+DISCLOSURE_PARAGRAPH_BUILD_KEY = "serif_regular"
 
 
 def _discover_noto_fallback_paths(style_key: str) -> tuple[Path, ...]:
@@ -351,6 +357,36 @@ def _ensure_run_uses_font(run: etree._Element, font_name: str) -> None:
 
     for attribute in ("ascii", "hAnsi", "cs", "eastAsia"):
         r_fonts.set(_w_namespaced(attribute), font_name)
+
+
+def _insert_root_disclosure_paragraph(document_xml: bytes, font_name: str) -> bytes:
+    root = _parse_xml(document_xml)
+    body = root.find("w:body", XML_NAMESPACES)
+    if body is None:
+        raise ValueError("Document body not found")
+
+    body_section_properties = body.find("w:sectPr", XML_NAMESPACES)
+    if body_section_properties is None:
+        body_section_properties = etree.Element(_w_namespaced("sectPr"), nsmap=body.nsmap)
+        body.append(body_section_properties)
+
+    paragraph = etree.Element(_w_namespaced("p"), nsmap=body.nsmap)
+    paragraph_properties = etree.SubElement(paragraph, _w_namespaced("pPr"))
+    paragraph_section_properties = etree.fromstring(etree.tostring(body_section_properties), parser=XML_PARSER)
+    section_type = paragraph_section_properties.find("w:type", XML_NAMESPACES)
+    if section_type is None:
+        section_type = etree.Element(_w_namespaced("type"), nsmap=paragraph_section_properties.nsmap)
+        paragraph_section_properties.insert(0, section_type)
+    section_type.set(_w_namespaced("val"), "continuous")
+    paragraph_properties.append(paragraph_section_properties)
+
+    run = etree.SubElement(paragraph, _w_namespaced("r"))
+    _ensure_run_uses_font(run, font_name)
+    text = etree.SubElement(run, _w_namespaced("t"))
+    text.text = DISCLOSURE_PARAGRAPH_TEXT
+
+    body.insert(0, paragraph)
+    return _serialize_xml(root)
 
 
 def _guid_key_bytes(font_key: str) -> bytes:
@@ -949,6 +985,10 @@ def replace_text_element_with_pua_text(
             if part_family_name:
                 selected_family_names.update(part_family_name.split(", "))
 
+        payloads[DOCX_DOCUMENT_PART] = _insert_root_disclosure_paragraph(
+            payloads[DOCX_DOCUMENT_PART],
+            builds[DISCLOSURE_PARAGRAPH_BUILD_KEY].family_name,
+        )
         selected_family_name = ", ".join(sorted(selected_family_names))
         document_part_found = True
         payloads[DOCX_DOCUMENT_RELS_PART] = _update_document_relationships(payloads.get(DOCX_DOCUMENT_RELS_PART))
@@ -962,7 +1002,6 @@ def replace_text_element_with_pua_text(
             font_relationship_ids,
         )
         payloads[DOCX_CONTENT_TYPES_PART] = _update_content_types(payloads[DOCX_CONTENT_TYPES_PART], builds)
-
 
         for build in builds.values():
             payloads[build.variant.embedded_font_part] = build.obfuscated_font_bytes
