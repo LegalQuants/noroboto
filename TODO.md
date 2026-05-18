@@ -1,4 +1,4 @@
-- [ ] Create partial obfuscation and replacement test documents (@drewmiller)
+- [x] Create partial obfuscation and replacement test documents (@drewmiller)
 - [ ] Add testing table to draft
 
 	| Level | Claude | Codex | Co-Pilot | Harvey* | Legora* | Spellbook* | GC AI* | Tritium |
