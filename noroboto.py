@@ -284,7 +284,7 @@ def _create_root(local_name: str, namespace: str, nsmap: dict[str | None, str]) 
 
 
 def _next_relationship_id(root: etree._Element) -> str:
-    highest = 0
+    highest = 1336 # start with something that won't collide with existing relationship IDs
     for relationship in root.findall(_package_relationship_namespaced("Relationship")):
         relationship_id = relationship.get("Id", "")
         if relationship_id.startswith("rId"):
