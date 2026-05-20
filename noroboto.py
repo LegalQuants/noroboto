@@ -35,6 +35,7 @@ OBFUSCATED_FONT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.ob
 FONT_TABLE_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"
 PUA_START = 0xE000
 PUA_END = 0xF8FF
+PUA_VARIANTS_PER_CODEPOINT = 4
 XML_NAMESPACES = {"w": WORDPROCESSINGML_NS, "r": OFFICE_RELATIONSHIPS_NS}
 XML_PARSER = etree.XMLParser(remove_blank_text=False, resolve_entities=False)
 DEFAULT_TEXT_XPATH = ".//w:t"
@@ -214,12 +215,13 @@ NOROBOTO_VARIANTS = {
 ARIAL_FONT_NAMES = {"Arial"}
 WORD_FALSE_VALUES = {"0", "false", "off"}
 GLYPH_PERTURB_MAX_SHIFT = 1
+PUAMapping = dict[int, tuple[int, ...]]
 
 
 @dataclass(frozen=True)
 class NorobotoBuild:
     variant: NorobotoVariant
-    mapping: dict[int, int]
+    mapping: PUAMapping
     font_bytes: bytes
     obfuscated_font_bytes: bytes
     font_key: str
@@ -667,7 +669,7 @@ def _supported_codepoints_for_variant(variant: NorobotoVariant, required_codepoi
 def _family_mapping_for_variants(
     variants: list[NorobotoVariant],
     required_codepoints: set[int],
-) -> dict[int, int]:
+) -> PUAMapping:
     unsupported_codepoints = sorted(
         codepoint
         for codepoint in required_codepoints
@@ -690,29 +692,42 @@ def _family_mapping_for_variants(
         )
 
     available_pua_codepoints = list(range(PUA_START, PUA_END + 1))
-    if len(eligible_codepoints) > len(available_pua_codepoints):
+    required_pua_codepoints = len(eligible_codepoints) * PUA_VARIANTS_PER_CODEPOINT
+    if required_pua_codepoints > len(available_pua_codepoints):
         raise ValueError(
-            f"Document requires {len(eligible_codepoints)} randomized BMP Unicode codepoints, "
+            f"Document requires {required_pua_codepoints} randomized BMP Unicode codepoints, "
             f"but only {len(available_pua_codepoints)} BMP PUA slots are available"
         )
 
-    shuffled_pua = available_pua_codepoints[: len(eligible_codepoints)]
+    shuffled_pua = available_pua_codepoints[:required_pua_codepoints]
     random.shuffle(shuffled_pua)
-    return dict(zip(eligible_codepoints, shuffled_pua))
+    return {
+        codepoint: tuple(
+            shuffled_pua[
+                index * PUA_VARIANTS_PER_CODEPOINT : (index + 1) * PUA_VARIANTS_PER_CODEPOINT
+            ]
+        )
+        for index, codepoint in enumerate(eligible_codepoints)
+    }
 
 
-def build_noroboto_font(variant: NorobotoVariant, mapping: dict[int, int]) -> NorobotoBuild:
+def build_noroboto_font(variant: NorobotoVariant, mapping: PUAMapping) -> NorobotoBuild:
     font = TTFont(str(variant.base_font_path))
     best_cmap = _copy_fallback_glyphs(font, variant, set(mapping))
     base_glyph_set = font.getGlyphSet()
     glyph_order = list(font.getGlyphOrder())
-    shuffled_glyph_names = {
-        source_codepoint: _unique_pua_clone_glyph_name(font, source_codepoint, shuffled_codepoint)
-        for source_codepoint, shuffled_codepoint in mapping.items()
-        if source_codepoint in best_cmap
-    }
+    shuffled_glyph_names: dict[tuple[int, int], str] = {}
+    for source_codepoint, shuffled_codepoints in mapping.items():
+        if source_codepoint not in best_cmap:
+            continue
+        for shuffled_codepoint in shuffled_codepoints:
+            shuffled_glyph_names[(source_codepoint, shuffled_codepoint)] = _unique_pua_clone_glyph_name(
+                font,
+                source_codepoint,
+                shuffled_codepoint,
+            )
 
-    for source_codepoint, shuffled_glyph_name in shuffled_glyph_names.items():
+    for (source_codepoint, _shuffled_codepoint), shuffled_glyph_name in shuffled_glyph_names.items():
         source_glyph_name = best_cmap[source_codepoint]
         _clone_glyph_with_perturbation(font, base_glyph_set, source_glyph_name, shuffled_glyph_name)
         font["hmtx"].metrics[shuffled_glyph_name] = font["hmtx"].metrics[source_glyph_name]
@@ -725,11 +740,12 @@ def build_noroboto_font(variant: NorobotoVariant, mapping: dict[int, int]) -> No
     for subtable in font["cmap"].tables:
         if not subtable.isUnicode() or not hasattr(subtable, "cmap"):
             continue
-        for source_codepoint, shuffled_codepoint in mapping.items():
-            glyph_name = shuffled_glyph_names.get(source_codepoint)
-            if glyph_name is None:
-                continue
-            subtable.cmap[shuffled_codepoint] = glyph_name
+        for source_codepoint, shuffled_codepoints in mapping.items():
+            for shuffled_codepoint in shuffled_codepoints:
+                glyph_name = shuffled_glyph_names.get((source_codepoint, shuffled_codepoint))
+                if glyph_name is None:
+                    continue
+                subtable.cmap[shuffled_codepoint] = glyph_name
 
     if "post" in font:
         font["post"].formatType = 3.0
@@ -840,15 +856,15 @@ def replace_text_with_pua_text(
         remapped_characters: list[str] = []
         for character in text_value:
             codepoint = ord(character)
-            shuffled_codepoint = build.mapping.get(codepoint)
-            if shuffled_codepoint is None and _should_preserve_codepoint(codepoint):
+            shuffled_codepoints = build.mapping.get(codepoint)
+            if shuffled_codepoints is None and _should_preserve_codepoint(codepoint):
                 remapped_characters.append(character)
                 continue
-            if shuffled_codepoint is None:
+            if shuffled_codepoints is None:
                 raise ValueError(
                     f"Character {character!r} (U+{codepoint:04X}) is not available in the {build.display_name} mapping"
                 )
-            remapped_characters.append(chr(shuffled_codepoint))
+            remapped_characters.append(chr(random.choice(shuffled_codepoints)))
 
         target.text = "".join(remapped_characters)
         replacement_count += len(text_value)
