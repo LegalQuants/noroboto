@@ -1052,19 +1052,6 @@ def _write_output_docx(docx_bytes: bytes, output_path: Path) -> Path:
         return fallback_path
 
 
-def _parse_substitution(specification: str) -> tuple[str, str]:
-    separator_index = specification.find("=")
-    if separator_index == -1:
-        raise argparse.ArgumentTypeError(
-            f"Substitution must be VISIBLE=EXTRACTED (got {specification!r})"
-        )
-    visible_text = specification[:separator_index]
-    extracted_text = specification[separator_index + 1 :]
-    if not visible_text:
-        raise argparse.ArgumentTypeError("Substitution requires a non-empty visible string")
-    return visible_text, extracted_text
-
-
 def _default_output_path_for(input_path: Path) -> Path:
     suffix = input_path.suffix.lower() or ".docx"
     return Path(f"noroboto{suffix}")
@@ -1081,24 +1068,6 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Path to write the Noroboto output file (default: noroboto<.ext>)",
     )
-    parser.add_argument(
-        "--mode",
-        choices=("total", "partial"),
-        default="total",
-        help="Obfuscation mode (default: total). Partial mode is currently PDF-only.",
-    )
-    parser.add_argument(
-        "--substitute",
-        dest="substitutions",
-        action="append",
-        type=_parse_substitution,
-        default=[],
-        help=(
-            "For --mode partial: a VISIBLE=EXTRACTED substitution. "
-            "May be passed multiple times. VISIBLE is preserved on the rendered page; "
-            "EXTRACTED is what text-layer extractors recover."
-        ),
-    )
     args = parser.parse_args(argv)
 
     input_path = Path(args.input_path)
@@ -1108,36 +1077,16 @@ def main(argv: list[str] | None = None) -> int:
     if input_suffix == ".pdf":
         from noroboto_pdf import write_obfuscated_pdf
 
-        if args.mode == "partial" and not args.substitutions:
-            parser.error("--mode partial requires at least one --substitute VISIBLE=EXTRACTED")
-
         written_path, replacement_count, font_family = write_obfuscated_pdf(
             input_path,
             output_path,
-            mode=args.mode,
-            substitutions=args.substitutions or None,
         )
-        if args.mode == "total":
-            print(
-                f"Built a randomized Noroboto Helvetica encoding in memory; "
-                f"used {font_family} for substitution, replaced {replacement_count} characters, "
-                f"and wrote {written_path.name}"
-            )
-        else:
-            substitution_summary = ", ".join(
-                f"{visible!r}->{extracted!r}" for visible, extracted in args.substitutions
-            )
-            print(
-                f"Built a Noroboto Helvetica encoding carrying {len(args.substitutions)} "
-                f"partial substitution(s) [{substitution_summary}]; reshaped {replacement_count} "
-                f"character(s) and wrote {written_path.name}"
-            )
+        print(
+            f"Built a randomized Noroboto {font_family} encoding in memory; "
+            f"replaced {replacement_count} characters, "
+            f"and wrote {written_path.name}"
+        )
         return 0
-
-    if args.mode != "total":
-        parser.error("--mode partial is currently supported for .pdf input only")
-    if args.substitutions:
-        parser.error("--substitute is only meaningful when --mode partial is set")
 
     updated_docx, replacement_count, selected_font_name = replace_text_element_with_pua_text(
         input_path.read_bytes(),

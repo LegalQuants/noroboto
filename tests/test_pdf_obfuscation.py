@@ -43,10 +43,10 @@ class TotalObfuscationTest(unittest.TestCase):
     def test_total_mode_replaces_visible_text_with_pua_in_extraction(self) -> None:
         pdf_bytes = SAMPLE_PDF_PATH.read_bytes()
         output_bytes, replacement_count, font_family = replace_text_with_pua_text_pdf(
-            pdf_bytes, mode="total", seed=4711,
+            pdf_bytes, seed=4711,
         )
         self.assertGreater(replacement_count, 0)
-        self.assertEqual(font_family, "Helvetica")
+        self.assertIn(font_family, ("LiberationSans", "LiberationSerif"))
 
         pdfminer_text = _extract_text_with_pdfminer(output_bytes)
         pypdf_text = _extract_text_with_pypdf(output_bytes)
@@ -64,32 +64,6 @@ class TotalObfuscationTest(unittest.TestCase):
 
         for extractor_text in (pdfminer_text, pypdf_text):
             self.assertIn("automated systems", extractor_text)
-
-
-class PartialObfuscationTest(unittest.TestCase):
-    def test_partial_mode_only_lies_about_the_substitution_span(self) -> None:
-        pdf_bytes = SAMPLE_PDF_PATH.read_bytes()
-        output_bytes, replacement_count, _ = replace_text_with_pua_text_pdf(
-            pdf_bytes,
-            mode="partial",
-            substitutions=[("$1,400,000", "$400")],
-            seed=4711,
-        )
-        self.assertGreater(replacement_count, 0)
-
-        pdfminer_text = _extract_text_with_pdfminer(output_bytes)
-
-        self.assertNotIn("$1,400,000", pdfminer_text)
-        self.assertIn("$400", pdfminer_text)
-        self.assertIn("Crestview Analytics", pdfminer_text)
-        self.assertIn("Northwind", pdfminer_text)
-        self.assertIn("Delaware", pdfminer_text)
-        self.assertIn("settlement amount is", pdfminer_text)
-
-    def test_partial_mode_rejects_when_substitutions_missing(self) -> None:
-        pdf_bytes = SAMPLE_PDF_PATH.read_bytes()
-        with self.assertRaises(ValueError):
-            replace_text_with_pua_text_pdf(pdf_bytes, mode="partial", substitutions=[])
 
 
 if __name__ == "__main__":

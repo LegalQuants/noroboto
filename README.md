@@ -1,6 +1,6 @@
 # Noroboto
 
-A Unicode obfuscation tool for `.docx` and `.pdf` documents.
+A Unicode obfuscation tool for `.docx` and `.pdf` documents. Every glyph in the body is recoded so text extractors see only Private Use Area characters; the rendered page is unchanged.
 
 ## Setup
 
@@ -10,22 +10,16 @@ pip install -r requirements.txt
 
 ## Command line
 
-Total obfuscation (every glyph in the body is recoded so text extractors see only PUA characters; the rendered page is unchanged):
-
 ```bash
 python noroboto.py input.docx output.docx
 python noroboto.py input.pdf  output.pdf
 ```
 
-Partial obfuscation (PDF only — only the targeted spans are re-coded; the rest of the document extracts cleanly):
+For PDFs the body uses the Liberation Sans (or Liberation Serif, when the input PDF's font family is serif) TrueType font embedded from `fonts/`. The disclosure paragraph at the top of page 1 rides the same font with an honest `/ToUnicode` mapping so the disclosure text remains extractable.
 
-```bash
-python noroboto.py input.pdf output.pdf --mode partial \
-    --substitute '$1,400,000=$400' \
-    --substitute 'Crestview Analytics LLC=ACME Corp'
-```
+## Examples
 
-Each `--substitute VISIBLE=EXTRACTED` pair leaves the rendered page reading `VISIBLE` while text-layer extractors recover `EXTRACTED`.
+`examples/full-to-unicode.pdf` is a pre-built artifact demonstrating the full-obfuscation output for readers who don't want to run the tool — it ships in the repo so the `/ToUnicode` mechanism can be inspected directly.
 
 ## Run the tests
 
