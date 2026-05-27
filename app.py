@@ -7,8 +7,11 @@ from pathlib import Path
 
 from flask import Flask, Response, render_template_string, request, send_file
 
-from noroboto import DEFAULT_TEXT_XPATH, replace_text_element_with_pua_text
-from noroboto_pdf import replace_text_with_pua_text_pdf
+from noroboto import (
+    DEFAULT_TEXT_XPATH,
+    replace_text_element_with_pua_text,
+    replace_text_with_pua_text_pdf,
+)
 
 INDEX_HTML = """<!doctype html>
 <html lang=\"en\">
