@@ -9,20 +9,33 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCS_DIR = REPO_ROOT / "docs"
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 SCRIPT_PATH = REPO_ROOT / "noroboto.py"
+SUPPORTED_EXTENSIONS = ("*.docx", "*.pdf")
+
+
+def _collect_corpus_paths() -> list[Path]:
+    collected: list[Path] = []
+    for pattern in SUPPORTED_EXTENSIONS:
+        collected.extend(sorted(DOCS_DIR.glob(pattern)))
+        collected.extend(sorted(FIXTURES_DIR.glob(pattern)))
+    return collected
 
 
 class NorobotoDocsCorpusTest(unittest.TestCase):
     def test_cli_accepts_all_docs_samples(self) -> None:
-        docx_paths = sorted(DOCS_DIR.glob("*.docx"))
-        self.assertTrue(docx_paths, f"No .docx files found in {DOCS_DIR}")
+        input_paths = _collect_corpus_paths()
+        self.assertTrue(
+            input_paths,
+            f"No .docx or .pdf files found in {DOCS_DIR} or {FIXTURES_DIR}",
+        )
 
         with tempfile.TemporaryDirectory() as temp_root:
             tmp_dir = Path(temp_root) / "tmp"
             tmp_dir.mkdir()
 
-            for input_path in docx_paths:
-                output_path = tmp_dir / f"{input_path.stem}-noroboto.docx"
+            for input_path in input_paths:
+                output_path = tmp_dir / f"{input_path.stem}-noroboto{input_path.suffix.lower()}"
                 command = [sys.executable, str(SCRIPT_PATH), str(input_path), str(output_path)]
                 completed = subprocess.run(
                     command,
