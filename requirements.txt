@@ -1,4 +1,6 @@
 Flask
 fonttools
 lxml
+pdfplumber
+pikepdf
 waitress

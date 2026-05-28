@@ -7,7 +7,11 @@ from pathlib import Path
 
 from flask import Flask, Response, render_template_string, request, send_file
 
-from noroboto import DEFAULT_TEXT_XPATH, replace_text_element_with_pua_text
+from noroboto import (
+    DEFAULT_TEXT_XPATH,
+    replace_text_element_with_pua_text,
+    replace_text_with_pua_text_pdf,
+)
 
 INDEX_HTML = """<!doctype html>
 <html lang=\"en\">
@@ -198,8 +202,8 @@ INDEX_HTML = """<!doctype html>
     <main class=\"shell\">
         <section class=\"panel\">
             <h1><span id=\"brand\" class=\"brand\">noroboto</span></h1>
-            <form id=\"upload-form\" action=\"{{ url_for('convert_docx') }}\" method=\"post\" enctype=\"multipart/form-data\">
-                <input class=\"file-input\" id=\"docx\" name=\"docx\" type=\"file\" accept=\".docx\" required>
+            <form id=\"upload-form\" action=\"{{ url_for('convert_document') }}\" method=\"post\" enctype=\"multipart/form-data\">
+                <input class=\"file-input\" id=\"document\" name=\"document\" type=\"file\" accept=\".docx,.pdf\" required>
                 <button id=\"obfuscate-button\" class=\"button\" type=\"button\">
                     <span class=\"button-label\">obfuscate document</span>
                     <span class=\"spinner\" aria-hidden=\"true\"></span>
@@ -213,7 +217,7 @@ INDEX_HTML = """<!doctype html>
     </a>
     <script>
         const uploadForm = document.getElementById('upload-form');
-        const fileInput = document.getElementById('docx');
+        const fileInput = document.getElementById('document');
         const obfuscateButton = document.getElementById('obfuscate-button');
         const errorElement = document.getElementById('error');
         const brand = document.getElementById('brand');
@@ -281,8 +285,9 @@ INDEX_HTML = """<!doctype html>
                 return;
             }
 
-            if (!file.name.toLowerCase().endsWith('.docx')) {
-                showError('Only .docx files are supported.');
+            const lowerName = file.name.toLowerCase();
+            if (!lowerName.endsWith('.docx') && !lowerName.endsWith('.pdf')) {
+                showError('Only .docx and .pdf files are supported.');
                 fileInput.value = '';
                 return;
             }
@@ -292,7 +297,7 @@ INDEX_HTML = """<!doctype html>
 
             try {
                 const formData = new FormData();
-                formData.append('docx', file);
+                formData.append('document', file);
 
                 const response = await fetch(uploadForm.action, {
                     method: 'POST',
@@ -354,12 +359,29 @@ app = Flask(__name__)
 LOGO_PATH = Path(__file__).with_name("lq-logo.png")
 
 
-def _download_name_for_upload(filename: str | None) -> str:
-    source_name = Path(filename or "document.docx").name
-    if not source_name.lower().endswith(".docx"):
-        source_name = f"{source_name}.docx"
+_SUPPORTED_DOCUMENT_EXTENSIONS = (".docx", ".pdf")
+_DOCUMENT_MIMETYPES = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pdf": "application/pdf",
+}
+
+
+def _resolve_upload_extension(filename: str | None) -> str | None:
+    if not filename:
+        return None
+    lower_name = filename.lower()
+    for extension in _SUPPORTED_DOCUMENT_EXTENSIONS:
+        if lower_name.endswith(extension):
+            return extension
+    return None
+
+
+def _download_name_for_upload(filename: str | None, extension: str) -> str:
+    source_name = Path(filename or f"document{extension}").name
+    if not source_name.lower().endswith(extension):
+        source_name = f"{source_name}{extension}"
     source_path = Path(source_name)
-    return f"{source_path.stem}-noroboto.docx"
+    return f"{source_path.stem}-noroboto{extension}"
 
 
 def _render_index(error: str | None = None, status_code: int = 200) -> Response:
@@ -387,27 +409,32 @@ def logo_asset() -> Response:
 
 
 @app.post("/convert")
-def convert_docx() -> Response:
-    uploaded_file = request.files.get("docx")
+def convert_document() -> Response:
+    uploaded_file = request.files.get("document") or request.files.get("docx")
     if uploaded_file is None or uploaded_file.filename is None or uploaded_file.filename == "":
-        return _render_error("Choose a .docx file to upload.", 400)
+        return _render_error("Choose a .docx or .pdf file to upload.", 400)
 
-    if not uploaded_file.filename.lower().endswith(".docx"):
-        return _render_error("Only .docx files are supported.", 400)
+    extension = _resolve_upload_extension(uploaded_file.filename)
+    if extension is None:
+        return _render_error("Only .docx and .pdf files are supported.", 400)
 
+    upload_bytes = uploaded_file.read()
     try:
-        updated_docx, _, _ = replace_text_element_with_pua_text(
-            uploaded_file.read(),
-            DEFAULT_TEXT_XPATH,
-        )
+        if extension == ".docx":
+            processed_bytes, _, _ = replace_text_element_with_pua_text(
+                upload_bytes,
+                DEFAULT_TEXT_XPATH,
+            )
+        else:
+            processed_bytes, _, _ = replace_text_with_pua_text_pdf(upload_bytes)
     except (KeyError, ValueError, zipfile.BadZipFile) as exc:
         return _render_error(f"Could not process file: {exc}", 400)
 
     return send_file(
-        BytesIO(updated_docx),
+        BytesIO(processed_bytes),
         as_attachment=True,
-        download_name=_download_name_for_upload(uploaded_file.filename),
-        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        download_name=_download_name_for_upload(uploaded_file.filename, extension),
+        mimetype=_DOCUMENT_MIMETYPES[extension],
     )
 
 

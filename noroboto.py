@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import io
 import random
 import unicodedata
 import zipfile
-from copy import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
+import pdfplumber
+import pikepdf
 from fontTools.ttLib import TTFont
 from fontTools.pens.recordingPen import DecomposingRecordingPen
 from fontTools.pens.transformPen import TransformPen
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 from lxml import etree
+from pikepdf import Array, Dictionary, Name, Stream
 
 DOCX_DOCUMENT_PART = "word/document.xml"
 DOCX_SETTINGS_PART = "word/settings.xml"
@@ -973,7 +977,7 @@ def replace_text_element_with_pua_text(
     selected_family_name = ""
 
     with zipfile.ZipFile(input_buffer, mode="r") as source_archive:
-        original_infos = {info.filename: copy(info) for info in source_archive.infolist()}
+        original_infos = {info.filename: copy.copy(info) for info in source_archive.infolist()}
         payloads = {info.filename: source_archive.read(info.filename) for info in source_archive.infolist()}
         target_part_names = _target_text_part_names(payloads)
 
@@ -1034,7 +1038,7 @@ def replace_text_element_with_pua_text(
                 if info is None:
                     info = zipfile.ZipInfo(part_name)
                     info.compress_type = zipfile.ZIP_DEFLATED
-                output_archive.writestr(copy(info), payload)
+                output_archive.writestr(copy.copy(info), payload)
 
     if not document_part_found:
         raise KeyError(f"DOCX part not found: {DOCX_DOCUMENT_PART}")
@@ -1052,19 +1056,899 @@ def _write_output_docx(docx_bytes: bytes, output_path: Path) -> Path:
         return fallback_path
 
 
+def _default_output_path_for(input_path: Path) -> Path:
+    suffix = input_path.suffix.lower() or ".docx"
+    return Path(f"noroboto{suffix}")
+
+
+# ==============================================================
+# PDF path (originally noroboto_pdf.py — folded in per PR review)
+# ==============================================================
+
+DISCLOSURE_TEXT = (
+    "This document contains mitigations against review by automated systems. "
+    "Recipients should ensure that they have read the contents on screen or in print. "
+    "Recipients with bona fide vision impairments may be entitled to unmitigated documents upon request."
+)
+DISCLOSURE_LINE_LIMIT = 92
+DEFAULT_PAGE_WIDTH = 612.0
+DEFAULT_PAGE_HEIGHT = 792.0
+BODY_FONT_RESOURCE_NAME = "F1"
+BODY_FONT_NAME = "LiberationSans"
+SERIF_FONT_NAME = "LiberationSerif"
+LIBERATION_SANS_PATH = Path(__file__).resolve().parent / "fonts" / "liberation-sans-regular.ttf"
+LIBERATION_SERIF_PATH = Path(__file__).resolve().parent / "fonts" / "liberation-serif-regular.ttf"
+WINANSI_PRINTABLE_RANGE = range(0x20, 0x7F)
+CUSTOM_ENCODING_BYTE_CODES = tuple(
+    [code for code in range(0x01, 0x20) if code not in (0x09, 0x0A, 0x0D)]
+    + list(range(0x80, 0xFF))
+)
+SERIF_FONT_HINTS = frozenset({"Times", "Times-Roman", "TimesNewRoman", "Times New Roman", "Georgia", "Garamond"})
+
+_PUNCTUATION_GLYPH_NAMES = {
+    "!": "exclam",
+    '"': "quotedbl",
+    "#": "numbersign",
+    "$": "dollar",
+    "%": "percent",
+    "&": "ampersand",
+    "'": "quoteright",
+    "(": "parenleft",
+    ")": "parenright",
+    "*": "asterisk",
+    "+": "plus",
+    ",": "comma",
+    "-": "hyphen",
+    ".": "period",
+    "/": "slash",
+    ":": "colon",
+    ";": "semicolon",
+    "<": "less",
+    "=": "equal",
+    ">": "greater",
+    "?": "question",
+    "@": "at",
+    "[": "bracketleft",
+    "\\": "backslash",
+    "]": "bracketright",
+    "^": "asciicircum",
+    "_": "underscore",
+    "`": "grave",
+    "{": "braceleft",
+    "|": "bar",
+    "}": "braceright",
+    "~": "asciitilde",
+}
+_DIGIT_GLYPH_NAMES = {
+    "0": "zero",
+    "1": "one",
+    "2": "two",
+    "3": "three",
+    "4": "four",
+    "5": "five",
+    "6": "six",
+    "7": "seven",
+    "8": "eight",
+    "9": "nine",
+}
+_LATIN_SUPPLEMENT_GLYPH_NAMES = {
+    " ": "space",
+    "¡": "exclamdown",
+    "¢": "cent",
+    "£": "sterling",
+    "¥": "yen",
+    "§": "section",
+    "¨": "dieresis",
+    "©": "copyright",
+    "«": "guillemotleft",
+    "¬": "logicalnot",
+    "®": "registered",
+    "¯": "macron",
+    "°": "degree",
+    "±": "plusminus",
+    "´": "acute",
+    "µ": "mu",
+    "¶": "paragraph",
+    "·": "periodcentered",
+    "¸": "cedilla",
+    "»": "guillemotright",
+    "¼": "onequarter",
+    "½": "onehalf",
+    "¾": "threequarters",
+    "¿": "questiondown",
+    "À": "Agrave",
+    "Á": "Aacute",
+    "Â": "Acircumflex",
+    "Ã": "Atilde",
+    "Ä": "Adieresis",
+    "Å": "Aring",
+    "Æ": "AE",
+    "Ç": "Ccedilla",
+    "È": "Egrave",
+    "É": "Eacute",
+    "Ê": "Ecircumflex",
+    "Ë": "Edieresis",
+    "Ì": "Igrave",
+    "Í": "Iacute",
+    "Î": "Icircumflex",
+    "Ï": "Idieresis",
+    "Ñ": "Ntilde",
+    "Ò": "Ograve",
+    "Ó": "Oacute",
+    "Ô": "Ocircumflex",
+    "Õ": "Otilde",
+    "Ö": "Odieresis",
+    "×": "multiply",
+    "Ø": "Oslash",
+    "Ù": "Ugrave",
+    "Ú": "Uacute",
+    "Û": "Ucircumflex",
+    "Ü": "Udieresis",
+    "Ý": "Yacute",
+    "ß": "germandbls",
+    "à": "agrave",
+    "á": "aacute",
+    "â": "acircumflex",
+    "ã": "atilde",
+    "ä": "adieresis",
+    "å": "aring",
+    "æ": "ae",
+    "ç": "ccedilla",
+    "è": "egrave",
+    "é": "eacute",
+    "ê": "ecircumflex",
+    "ë": "edieresis",
+    "ì": "igrave",
+    "í": "iacute",
+    "î": "icircumflex",
+    "ï": "idieresis",
+    "ñ": "ntilde",
+    "ò": "ograve",
+    "ó": "oacute",
+    "ô": "ocircumflex",
+    "õ": "otilde",
+    "ö": "odieresis",
+    "÷": "divide",
+    "ø": "oslash",
+    "ù": "ugrave",
+    "ú": "uacute",
+    "û": "ucircumflex",
+    "ü": "udieresis",
+    "ý": "yacute",
+    "ÿ": "ydieresis",
+}
+_TYPOGRAPHIC_GLYPH_NAMES = {
+    "–": "endash",
+    "—": "emdash",
+    "‘": "quoteleft",
+    "’": "quoteright",
+    "“": "quotedblleft",
+    "”": "quotedblright",
+    "•": "bullet",
+    "…": "ellipsis",
+    "€": "Euro",
+    "¤": "currency",
+    "¦": "brokenbar",
+    "ª": "ordfeminine",
+    "²": "twosuperior",
+    "³": "threesuperior",
+    "¹": "onesuperior",
+    "º": "ordmasculine",
+    "™": "trademark",
+    "†": "dagger",
+    "‡": "daggerdbl",
+    "‰": "perthousand",
+    "Ð": "Eth",
+    "Þ": "Thorn",
+    "ð": "eth",
+    "þ": "thorn",
+}
+
+
+def _glyph_name_for_character(character: str) -> str | None:
+    if len(character) != 1:
+        return None
+    if character.isalpha() and ord(character) < 128:
+        return character
+    if character in _DIGIT_GLYPH_NAMES:
+        return _DIGIT_GLYPH_NAMES[character]
+    if character in _PUNCTUATION_GLYPH_NAMES:
+        return _PUNCTUATION_GLYPH_NAMES[character]
+    if character in _LATIN_SUPPLEMENT_GLYPH_NAMES:
+        return _LATIN_SUPPLEMENT_GLYPH_NAMES[character]
+    if character in _TYPOGRAPHIC_GLYPH_NAMES:
+        return _TYPOGRAPHIC_GLYPH_NAMES[character]
+    return None
+
+
+@dataclass(frozen=True)
+class PdfCharacter:
+    text: str
+    x0: float
+    y0: float
+    width: float
+    height: float
+    font_size: float
+
+
+@dataclass(frozen=True)
+class PdfPage:
+    width: float
+    height: float
+    characters: tuple[PdfCharacter, ...]
+
+
+@dataclass
+class _ByteCodePool:
+    available: list[int] = field(default_factory=lambda: list(CUSTOM_ENCODING_BYTE_CODES))
+    rng: random.Random | None = None
+
+    def reserve(self, count: int) -> list[int]:
+        if count > len(self.available):
+            raise ValueError(
+                f"Custom encoding requires {count} byte codes, but only {len(self.available)} remain free."
+            )
+        if self.rng is not None:
+            self.rng.shuffle(self.available)
+        reserved = self.available[:count]
+        self.available = self.available[count:]
+        return reserved
+
+
+@dataclass
+class _ObfuscationRecipe:
+    body_byte_codes_for_character: dict[str, tuple[int, ...]]
+    byte_code_to_glyph_name: dict[int, str]
+    byte_code_to_unicode_target: dict[int, str]
+    glyph_clones: dict[str, str]  # anonymous glyph name -> source glyph name in the font
+
+
+def _extract_pages(pdf_bytes: bytes) -> tuple[PdfPage, ...]:
+    pages: list[PdfPage] = []
+    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            characters: list[PdfCharacter] = []
+            for character in page.chars:
+                text = str(character.get("text", ""))
+                if not text:
+                    continue
+                font_size = float(character.get("size") or character.get("height") or 11.0)
+                if font_size <= 0:
+                    font_size = 11.0
+                characters.append(
+                    PdfCharacter(
+                        text=text,
+                        x0=float(character.get("x0", 0.0)),
+                        y0=float(character.get("y0", 0.0)),
+                        width=float(character.get("width", 0.0)),
+                        height=float(character.get("height", 0.0)),
+                        font_size=font_size,
+                    )
+                )
+            pages.append(
+                PdfPage(
+                    width=float(page.width) if page.width else DEFAULT_PAGE_WIDTH,
+                    height=float(page.height) if page.height else DEFAULT_PAGE_HEIGHT,
+                    characters=tuple(characters),
+                )
+            )
+    return tuple(pages)
+
+
+def _load_font_cmap(font_path: Path) -> dict[int, str]:
+    """Return the font's Unicode-codepoint -> glyph-name mapping."""
+    font = TTFont(str(font_path))
+    try:
+        return dict(font.getBestCmap() or {})
+    finally:
+        font.close()
+
+
+def _build_total_recipe(
+    pages: tuple[PdfPage, ...], font_cmap: dict[int, str], *, rng: random.Random
+) -> _ObfuscationRecipe:
+    def _glyph_for(character: str) -> str | None:
+        if len(character) != 1:
+            return None
+        codepoint = ord(character)
+        glyph = font_cmap.get(codepoint)
+        if glyph is not None:
+            return glyph
+        return _glyph_name_for_character(character)
+
+    unique_characters = sorted(
+        {
+            character.text
+            for page in pages
+            for character in page.characters
+            if not character.text.isspace() and _glyph_for(character.text) is not None
+        }
+    )
+    if "?" not in unique_characters and _glyph_for("?") is not None:
+        unique_characters.append("?")
+
+    pool = _ByteCodePool(rng=rng)
+    available_pua_codepoints = list(range(PUA_START, PUA_END + 1))
+    rng.shuffle(available_pua_codepoints)
+
+    available_codes = len(pool.available)
+    n_chars = len(unique_characters)
+    if n_chars == 0:
+        raise ValueError("Input PDF contains no extractable encodable characters")
+    if n_chars > available_codes:
+        raise ValueError(
+            f"Document requires {n_chars} unique encodable characters but only "
+            f"{available_codes} custom byte codes are available in the single-byte "
+            f"encoding. Reduce the number of unique characters in the input or switch "
+            f"the carrier to a Type0/CIDFontType2 font (not implemented in this version)."
+        )
+    variants_per_character = min(PUA_VARIANTS_PER_CODEPOINT, available_codes // n_chars)
+
+    required_codes = n_chars * variants_per_character
+    reserved_byte_codes = pool.reserve(required_codes)
+
+    body_byte_codes_for_character: dict[str, tuple[int, ...]] = {}
+    byte_code_to_glyph_name: dict[int, str] = {}
+    byte_code_to_unicode_target: dict[int, str] = {}
+    glyph_clones: dict[str, str] = {}
+    pua_iter = iter(available_pua_codepoints)
+    code_iter = iter(reserved_byte_codes)
+    for character_index, character in enumerate(unique_characters):
+        source_glyph_name = _glyph_for(character)
+        if source_glyph_name is None:
+            continue
+        variant_byte_codes: list[int] = []
+        for variant_index in range(variants_per_character):
+            byte_code = next(code_iter)
+            anonymous_glyph_name = f"norobotoG{character_index:03X}V{variant_index}"
+            byte_code_to_glyph_name[byte_code] = anonymous_glyph_name
+            byte_code_to_unicode_target[byte_code] = chr(next(pua_iter))
+            glyph_clones[anonymous_glyph_name] = source_glyph_name
+            variant_byte_codes.append(byte_code)
+        body_byte_codes_for_character[character] = tuple(variant_byte_codes)
+
+    return _ObfuscationRecipe(
+        body_byte_codes_for_character=body_byte_codes_for_character,
+        byte_code_to_glyph_name=byte_code_to_glyph_name,
+        byte_code_to_unicode_target=byte_code_to_unicode_target,
+        glyph_clones=glyph_clones,
+    )
+
+
+def _differences_array(byte_code_to_glyph_name: dict[int, str]) -> Array:
+    entries: list = []
+    sorted_codes = sorted(byte_code_to_glyph_name)
+    previous_code: int | None = None
+    for byte_code in sorted_codes:
+        if previous_code is None or byte_code != previous_code + 1:
+            entries.append(byte_code)
+        entries.append(Name(f"/{byte_code_to_glyph_name[byte_code]}"))
+        previous_code = byte_code
+    return Array(entries)
+
+
+_TOUNICODE_HEADER = b"""/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo
+<< /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /Adobe-Identity-UCS def
+/CMapType 2 def
+1 begincodespacerange
+<00> <FF>
+endcodespacerange
+"""
+_TOUNICODE_FOOTER = b"""endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end
+"""
+
+
+def _utf16be_hex(text: str) -> str:
+    return text.encode("utf-16-be").hex().upper()
+
+
+def _build_tounicode_cmap(
+    byte_code_to_unicode_target: dict[int, str], *, include_winansi_identity: bool
+) -> bytes:
+    mapping: dict[int, str] = dict(byte_code_to_unicode_target)
+    if include_winansi_identity:
+        for codepoint in WINANSI_PRINTABLE_RANGE:
+            mapping.setdefault(codepoint, chr(codepoint))
+    body = io.BytesIO()
+    body.write(_TOUNICODE_HEADER)
+    items = sorted(mapping.items())
+    if items:
+        for chunk_start in range(0, len(items), 100):
+            chunk = items[chunk_start : chunk_start + 100]
+            body.write(f"{len(chunk)} beginbfchar\n".encode("ascii"))
+            for byte_code, target_text in chunk:
+                body.write(
+                    f"<{byte_code:02X}> <{_utf16be_hex(target_text)}>\n".encode("ascii")
+                )
+            body.write(b"endbfchar\n")
+    body.write(_TOUNICODE_FOOTER)
+    return body.getvalue()
+
+
+def _encode_total_character(
+    character: str, recipe: _ObfuscationRecipe, rng: random.Random
+) -> int | None:
+    if character.isspace():
+        return 0x20
+    variants = recipe.body_byte_codes_for_character.get(character)
+    if variants:
+        return rng.choice(variants)
+    fallback_variants = recipe.body_byte_codes_for_character.get("?")
+    if fallback_variants:
+        return rng.choice(fallback_variants)
+    return None
+
+
+def _disclosure_lines(text: str, line_character_limit: int) -> list[str]:
+    if line_character_limit <= 0:
+        return [text]
+    words = text.split()
+    if not words:
+        return [text]
+    lines: list[str] = []
+    current_line = ""
+    for word in words:
+        if not current_line:
+            current_line = word
+            continue
+        candidate_line = f"{current_line} {word}"
+        if len(candidate_line) > line_character_limit:
+            lines.append(current_line)
+            current_line = word
+        else:
+            current_line = candidate_line
+    if current_line:
+        lines.append(current_line)
+    return lines
+
+
+def _format_pdf_number(value: float) -> str:
+    rounded_value = round(value, 3)
+    if rounded_value == int(rounded_value):
+        return str(int(rounded_value))
+    return f"{rounded_value:.3f}".rstrip("0").rstrip(".")
+
+
+def _build_text_command(
+    *,
+    font_resource_name: str,
+    font_size: float,
+    x_position: float,
+    y_position: float,
+    body_bytes: bytes,
+) -> bytes:
+    return (
+        b"BT\n"
+        + f"/{font_resource_name} {_format_pdf_number(font_size)} Tf\n".encode("ascii")
+        + f"1 0 0 1 {_format_pdf_number(x_position)} {_format_pdf_number(y_position)} Tm\n".encode("ascii")
+        + b"<"
+        + body_bytes.hex().upper().encode("ascii")
+        + b"> Tj\n"
+        + b"ET\n"
+    )
+
+
+def _build_disclosure_block(
+    *,
+    page_width: float,
+    page_height: float,
+    disclosure_font_size: float,
+    disclosure_line_leading: float,
+    margin: float,
+) -> tuple[bytes, float]:
+    lines = _disclosure_lines(DISCLOSURE_TEXT, DISCLOSURE_LINE_LIMIT)
+    top_y = page_height - margin
+    block_height = len(lines) * disclosure_font_size * disclosure_line_leading
+    content = bytearray()
+    for line_index, line_text in enumerate(lines):
+        line_y = top_y - (line_index + 1) * disclosure_font_size * disclosure_line_leading
+        content.extend(
+            _build_text_command(
+                font_resource_name=BODY_FONT_RESOURCE_NAME,
+                font_size=disclosure_font_size,
+                x_position=margin,
+                y_position=line_y,
+                body_bytes=line_text.encode("latin-1", errors="replace"),
+            )
+        )
+    return bytes(content), block_height
+
+
+def _build_page_content(
+    *,
+    page: PdfPage,
+    recipe: _ObfuscationRecipe,
+    rng: random.Random,
+    is_first_page: bool,
+    disclosure_font_size: float,
+    disclosure_line_leading: float,
+    margin: float,
+    disclosure_gap: float,
+) -> bytes:
+    content = bytearray()
+    body_y_offset = 0.0
+    if is_first_page:
+        disclosure_block_bytes, disclosure_block_height = _build_disclosure_block(
+            page_width=page.width,
+            page_height=page.height,
+            disclosure_font_size=disclosure_font_size,
+            disclosure_line_leading=disclosure_line_leading,
+            margin=margin,
+        )
+        content.extend(disclosure_block_bytes)
+        body_y_offset = disclosure_block_height + disclosure_gap
+
+    for character in page.characters:
+        if character.text.isspace():
+            continue
+        byte_code = _encode_total_character(character.text, recipe, rng)
+        if byte_code is None:
+            continue
+        content.extend(
+            _build_text_command(
+                font_resource_name=BODY_FONT_RESOURCE_NAME,
+                font_size=character.font_size,
+                x_position=character.x0,
+                y_position=character.y0 - body_y_offset,
+                body_bytes=bytes((byte_code,)),
+            )
+        )
+    return bytes(content)
+
+
+@dataclass(frozen=True)
+class _FontProgram:
+    ps_name: str
+    family_key: str
+    ttf_bytes: bytes
+    units_per_em: int
+    glyph_widths: dict[str, int]
+    ascent: int
+    descent: int
+    cap_height: int
+    italic_angle: float
+    font_bbox: tuple[int, int, int, int]
+
+
+def _load_font_program(
+    font_path: Path,
+    ps_name: str,
+    family_key: str,
+    glyph_clones: dict[str, str] | None = None,
+) -> _FontProgram:
+    font = TTFont(str(font_path))
+    try:
+        if glyph_clones:
+            _clone_glyphs_in_font(font, glyph_clones)
+        units_per_em = font["head"].unitsPerEm
+        hmtx_table = font["hmtx"]
+        widths = {name: advance for name, (advance, _) in hmtx_table.metrics.items()}
+        head = font["head"]
+        hhea = font["hhea"]
+        os2 = font.get("OS/2")
+        if os2 is not None and getattr(os2, "sCapHeight", 0):
+            cap_height = int(os2.sCapHeight)
+        else:
+            cap_height = int(round(0.7 * units_per_em))
+        if glyph_clones:
+            buffer = BytesIO()
+            font.save(buffer)
+            ttf_bytes = buffer.getvalue()
+        else:
+            ttf_bytes = font_path.read_bytes()
+        return _FontProgram(
+            ps_name=ps_name,
+            family_key=family_key,
+            ttf_bytes=ttf_bytes,
+            units_per_em=units_per_em,
+            glyph_widths=widths,
+            ascent=int(hhea.ascent),
+            descent=int(hhea.descent),
+            cap_height=cap_height,
+            italic_angle=float(font["post"].italicAngle),
+            font_bbox=(int(head.xMin), int(head.yMin), int(head.xMax), int(head.yMax)),
+        )
+    finally:
+        font.close()
+
+
+def _clone_glyphs_in_font(font: TTFont, glyph_clones: dict[str, str]) -> None:
+    """Add aliased glyph copies into the font under anonymous names.
+
+    Each entry `anonymous_name -> source_name` produces a new glyph in the font's
+    glyf and hmtx tables that draws identically to the source glyph but is
+    addressable only by the anonymous name. The /Encoding /Differences array in
+    the PDF font dictionary references the anonymous names; readers that parse
+    the font dictionary cannot recover the underlying character from those names.
+    """
+    glyph_table = font["glyf"]
+    hmtx_table = font["hmtx"]
+    glyph_set = font.getGlyphSet()
+    glyph_order = list(font.getGlyphOrder())
+    existing = set(glyph_order)
+
+    cmap = font.getBestCmap()
+    space_glyph_name = cmap.get(0x20) if cmap else None
+
+    for anonymous_name, source_name in glyph_clones.items():
+        if anonymous_name in existing:
+            continue
+        resolved_source = source_name
+        if resolved_source not in glyph_table.glyphs:
+            if resolved_source == "space" and space_glyph_name:
+                resolved_source = space_glyph_name
+            else:
+                continue
+        source_glyph = glyph_table.glyphs[resolved_source]
+        glyph_table.glyphs[anonymous_name] = copy.deepcopy(source_glyph)
+        hmtx_table.metrics[anonymous_name] = hmtx_table.metrics[resolved_source]
+        glyph_order.append(anonymous_name)
+        existing.add(anonymous_name)
+
+    font.setGlyphOrder(glyph_order)
+
+
+def _scale_to_pdf_units(value: float, units_per_em: int) -> int:
+    return int(round(value * 1000.0 / units_per_em))
+
+
+def _glyph_name_for_winansi_code(code: int) -> str | None:
+    if 0x20 <= code <= 0x7E or 0x80 <= code <= 0xFF:
+        character = chr(code)
+        glyph_name = _glyph_name_for_character(character)
+        if glyph_name is not None:
+            return glyph_name
+        if character == " ":
+            return "space"
+    return None
+
+
+def _detect_input_font_family(pages: tuple[PdfPage, ...], pdf_bytes: bytes) -> str:
+    """Sample the input PDF's chars for any serif-family font hints; default to sans."""
+    try:
+        sample_size = 0
+        serif_hits = 0
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages[:2]:
+                for character in page.chars[:200]:
+                    font_name = str(character.get("fontname", ""))
+                    if not font_name:
+                        continue
+                    sample_size += 1
+                    if any(hint.lower() in font_name.lower() for hint in SERIF_FONT_HINTS):
+                        serif_hits += 1
+        if sample_size > 0 and serif_hits >= max(1, sample_size // 3):
+            return "serif"
+    except Exception:
+        pass
+    return "sans"
+
+
+def _build_body_font_dictionary(
+    pdf: pikepdf.Pdf, recipe: _ObfuscationRecipe, font_program: _FontProgram
+) -> Dictionary:
+    tounicode_stream = Stream(
+        pdf,
+        _build_tounicode_cmap(
+            recipe.byte_code_to_unicode_target,
+            include_winansi_identity=True,
+        ),
+    )
+
+    font_file_stream = Stream(pdf, font_program.ttf_bytes)
+    font_file_stream.Length1 = len(font_program.ttf_bytes)
+
+    upm = font_program.units_per_em
+    descriptor = pdf.make_indirect(
+        Dictionary(
+            Type=Name("/FontDescriptor"),
+            FontName=Name(f"/{font_program.ps_name}"),
+            Flags=32,
+            FontBBox=Array([_scale_to_pdf_units(value, upm) for value in font_program.font_bbox]),
+            ItalicAngle=font_program.italic_angle,
+            Ascent=_scale_to_pdf_units(font_program.ascent, upm),
+            Descent=_scale_to_pdf_units(font_program.descent, upm),
+            CapHeight=_scale_to_pdf_units(font_program.cap_height, upm),
+            StemV=80,
+            FontFile2=font_file_stream,
+        )
+    )
+
+    used_codes = set(recipe.byte_code_to_glyph_name.keys()) | set(WINANSI_PRINTABLE_RANGE)
+    first_char = min(used_codes)
+    last_char = max(used_codes)
+    widths_array: list[int] = []
+    for code in range(first_char, last_char + 1):
+        glyph_name = recipe.byte_code_to_glyph_name.get(code)
+        if glyph_name is None:
+            glyph_name = _glyph_name_for_winansi_code(code)
+        if glyph_name is not None:
+            advance = font_program.glyph_widths.get(glyph_name)
+            if advance is None and glyph_name == "space":
+                advance = font_program.glyph_widths.get("uni00A0")
+            if advance is None:
+                advance = font_program.glyph_widths.get(".notdef", 500)
+        else:
+            advance = 0
+        widths_array.append(_scale_to_pdf_units(advance, upm))
+
+    return pdf.make_indirect(
+        Dictionary(
+            Type=Name("/Font"),
+            Subtype=Name("/TrueType"),
+            BaseFont=Name(f"/{font_program.ps_name}"),
+            Encoding=Dictionary(
+                Type=Name("/Encoding"),
+                BaseEncoding=Name("/WinAnsiEncoding"),
+                Differences=_differences_array(recipe.byte_code_to_glyph_name),
+            ),
+            ToUnicode=tounicode_stream,
+            FirstChar=first_char,
+            LastChar=last_char,
+            Widths=Array(widths_array),
+            FontDescriptor=descriptor,
+        )
+    )
+
+
+def _select_font_program(
+    family_key: str, glyph_clones: dict[str, str] | None = None
+) -> _FontProgram:
+    if family_key == "serif":
+        if LIBERATION_SERIF_PATH.exists():
+            return _load_font_program(
+                LIBERATION_SERIF_PATH, SERIF_FONT_NAME, "serif", glyph_clones
+            )
+    if not LIBERATION_SANS_PATH.exists():
+        raise FileNotFoundError(
+            f"Liberation Sans font not found at expected location: {LIBERATION_SANS_PATH}"
+        )
+    return _load_font_program(
+        LIBERATION_SANS_PATH, BODY_FONT_NAME, "sans", glyph_clones
+    )
+
+
+def _build_output_pdf(
+    pages: tuple[PdfPage, ...],
+    recipe: _ObfuscationRecipe,
+    font_program: _FontProgram,
+    rng: random.Random,
+    *,
+    disclosure_font_size: float = 9.0,
+    disclosure_line_leading: float = 1.25,
+    margin: float = 36.0,
+    disclosure_gap: float = 18.0,
+    source_title: str | None = None,
+) -> bytes:
+    pdf = pikepdf.Pdf.new()
+    with pdf.open_metadata(set_pikepdf_as_editor=False) as metadata:
+        metadata["dc:title"] = source_title or "Noroboto-processed document"
+        metadata["pdf:Producer"] = "Noroboto"
+    pdf.docinfo["/Producer"] = "Noroboto"
+    pdf.docinfo["/Title"] = source_title or "Noroboto-processed document"
+
+    body_font = _build_body_font_dictionary(pdf, recipe, font_program)
+
+    for page_index, page in enumerate(pages):
+        page_width = page.width or DEFAULT_PAGE_WIDTH
+        page_height = page.height or DEFAULT_PAGE_HEIGHT
+        content_bytes = _build_page_content(
+            page=page,
+            recipe=recipe,
+            rng=rng,
+            is_first_page=page_index == 0,
+            disclosure_font_size=disclosure_font_size,
+            disclosure_line_leading=disclosure_line_leading,
+            margin=margin,
+            disclosure_gap=disclosure_gap,
+        )
+        if not content_bytes:
+            content_bytes = b"BT ET\n"
+        content_stream = Stream(pdf, content_bytes)
+        page_dictionary = Dictionary(
+            Type=Name("/Page"),
+            MediaBox=Array([0, 0, page_width, page_height]),
+            Resources=Dictionary(
+                Font=Dictionary(
+                    F1=body_font,
+                ),
+            ),
+            Contents=content_stream,
+        )
+        pdf.pages.append(pikepdf.Page(pdf.make_indirect(page_dictionary)))
+
+    output_buffer = BytesIO()
+    pdf.save(output_buffer)
+    return output_buffer.getvalue()
+
+
+def replace_text_with_pua_text_pdf(
+    pdf_bytes: bytes,
+    *,
+    seed: int | None = None,
+) -> tuple[bytes, int, str]:
+    rng = random.Random(seed if seed is not None else int(uuid4().int & 0xFFFFFFFF))
+    pages = _extract_pages(pdf_bytes)
+    if not pages:
+        raise ValueError("Input PDF has no pages")
+
+    family_key = _detect_input_font_family(pages, pdf_bytes)
+    font_path = LIBERATION_SERIF_PATH if family_key == "serif" and LIBERATION_SERIF_PATH.exists() else LIBERATION_SANS_PATH
+    if not font_path.exists():
+        raise FileNotFoundError(f"Liberation font not found at: {font_path}")
+    font_cmap = _load_font_cmap(font_path)
+
+    recipe = _build_total_recipe(pages, font_cmap, rng=rng)
+
+    font_program = _select_font_program(family_key, recipe.glyph_clones)
+
+    output_bytes = _build_output_pdf(pages, recipe, font_program, rng)
+
+    replacement_count = sum(
+        1
+        for page in pages
+        for character in page.characters
+        if not character.text.isspace() and character.text in recipe.body_byte_codes_for_character
+    )
+    return output_bytes, replacement_count, font_program.ps_name
+
+
+def write_obfuscated_pdf(
+    input_path: Path,
+    output_path: Path,
+    *,
+    seed: int | None = None,
+) -> tuple[Path, int, str]:
+    obfuscated_bytes, replacement_count, font_family = replace_text_with_pua_text_pdf(
+        input_path.read_bytes(),
+        seed=seed,
+    )
+    try:
+        output_path.write_bytes(obfuscated_bytes)
+        written_path = output_path
+    except PermissionError:
+        fallback_path = output_path.with_name(f"{output_path.stem}-generated{output_path.suffix}")
+        fallback_path.write_bytes(obfuscated_bytes)
+        written_path = fallback_path
+    return written_path, replacement_count, font_family
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Apply Noroboto to a .docx file.")
-    parser.add_argument("input_path", help="Path to the input .docx file")
+    parser = argparse.ArgumentParser(
+        description="Apply Noroboto to a .docx or .pdf file."
+    )
+    parser.add_argument("input_path", help="Path to the input .docx or .pdf file")
     parser.add_argument(
         "output_path",
         nargs="?",
-        default="noroboto.docx",
-        help="Path to write the Noroboto output .docx file",
+        default=None,
+        help="Path to write the Noroboto output file (default: noroboto<.ext>)",
     )
     args = parser.parse_args(argv)
 
     input_path = Path(args.input_path)
-    output_path = Path(args.output_path)
+    output_path = Path(args.output_path) if args.output_path else _default_output_path_for(input_path)
+    input_suffix = input_path.suffix.lower()
+
+    if input_suffix == ".pdf":
+        written_path, replacement_count, font_family = write_obfuscated_pdf(
+            input_path,
+            output_path,
+        )
+        print(
+            f"Built a randomized Noroboto {font_family} encoding in memory; "
+            f"replaced {replacement_count} characters, "
+            f"and wrote {written_path.name}"
+        )
+        return 0
+
     updated_docx, replacement_count, selected_font_name = replace_text_element_with_pua_text(
         input_path.read_bytes(),
         DEFAULT_TEXT_XPATH,
