@@ -1,6 +1,11 @@
 # Noroboto
 
-A Unicode obfuscation tool for `.docx` and `.pdf` documents. Every glyph in the body is recoded so text extractors see only Private Use Area characters; the rendered page is unchanged.
+A proof-of-concept Unicode obfuscation tool for `.docx` and `.pdf` documents. Every glyph in the body is recoded so text extractors see only Private Use Area characters; the rendered page is unchanged.
+
+## Background
+
+- [Noroboto and Legal Tech's Mythos Moment](https://legalquants.substack.com/p/noroboto-and-legal-techs-mythos-moment)
+- [Noroboto and the PDF That Lied Twice](https://legalquants.substack.com/p/noroboto-and-the-pdf-that-lied-twice)
 
 ## Setup
 
